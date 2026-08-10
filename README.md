@@ -1,4 +1,4 @@
-# Ovyu Demo Agent
+# MIRA
 
 Maker records memories → AssemblyAI transcription → Voyage embeddings in Postgres/pgvector → ElevenLabs voice clone. Keepers chat with a grounded Claude agent (hybrid RRF retrieval, Haiku route + Sonnet answer).
 

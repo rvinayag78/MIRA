@@ -6,24 +6,38 @@ import { Recorder } from "@/components/Recorder";
 import {
   Agent,
   Memory,
-  cloneVoice,
+  STORAGE_KEY,
   createAgent,
+  createTextMemory,
   getAgent,
   listMemories,
   uploadMemory,
 } from "@/lib/api";
 
-const STORAGE_KEY = "ovyu_maker_agent";
-
 type Stored = { id: string; token: string; display_name: string };
+type Mode = "choose" | "text" | "voice";
 
 export default function MakerPage() {
-  const [name, setName] = useState("");
   const [agent, setAgent] = useState<Agent | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [memories, setMemories] = useState<Memory[]>([]);
+  const [mode, setMode] = useState<Mode>("choose");
+  const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [booting, setBooting] = useState(true);
+
+  const textCount = useMemo(
+    () => memories.filter((m) => m.kind === "text").length,
+    [memories],
+  );
+  const voiceCount = useMemo(
+    () => memories.filter((m) => m.kind === "voice").length,
+    [memories],
+  );
+  const textIndexed = agent?.text_indexed ?? 0;
+  const voiceIndexed = agent?.voice_indexed ?? 0;
+  const ready = Boolean(agent?.ready_for_keeper);
 
   const keeperPath = useMemo(() => {
     if (!agent || !token) return null;
@@ -37,46 +51,58 @@ export default function MakerPage() {
   }, []);
 
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    try {
-      const stored = JSON.parse(raw) as Stored;
-      setToken(stored.token);
-      setName(stored.display_name);
-      void refresh(stored.id, stored.token).catch((e) => setError(String(e)));
-    } catch {
-      localStorage.removeItem(STORAGE_KEY);
+    async function boot() {
+      setBooting(true);
+      setError(null);
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) {
+          const stored = JSON.parse(raw) as Stored;
+          setToken(stored.token);
+          await refresh(stored.id, stored.token);
+        } else {
+          const a = await createAgent("Maker");
+          if (!a.share_token) throw new Error("Missing share token");
+          const stored: Stored = {
+            id: a.id,
+            token: a.share_token,
+            display_name: a.display_name,
+          };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
+          setToken(a.share_token);
+          setAgent(a);
+          setMemories([]);
+        }
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setBooting(false);
+      }
     }
+    void boot();
   }, [refresh]);
 
   useEffect(() => {
     if (!agent || !token) return;
-    const hasPending = memories.some((m) =>
-      ["pending", "transcribing", "embedding", "cloning"].includes(m.status),
-    ) || agent.status === "cloning";
-    if (!hasPending) return;
+    const pending =
+      memories.some((m) => ["pending", "transcribing", "embedding"].includes(m.status)) ||
+      agent.status === "cloning";
+    if (!pending) return;
     const t = window.setInterval(() => {
       void refresh(agent.id, token).catch(() => undefined);
-    }, 2500);
+    }, 2000);
     return () => window.clearInterval(t);
   }, [agent, token, memories, refresh]);
 
-  async function onCreate(e: React.FormEvent) {
+  async function onSaveText(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
+    if (!agent || !token || !text.trim() || textCount >= 3) return;
     setBusy(true);
+    setError(null);
     try {
-      const a = await createAgent(name.trim() || "Maker");
-      if (!a.share_token) throw new Error("Missing share token");
-      const stored: Stored = {
-        id: a.id,
-        token: a.share_token,
-        display_name: a.display_name,
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
-      setToken(a.share_token);
-      setAgent(a);
-      setMemories([]);
+      await createTextMemory(agent.id, token, text.trim());
+      setText("");
+      await refresh(agent.id, token);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -85,7 +111,7 @@ export default function MakerPage() {
   }
 
   async function onRecorded(blob: Blob, durationMs: number) {
-    if (!agent || !token) return;
+    if (!agent || !token || voiceCount >= 3) return;
     setError(null);
     try {
       await uploadMemory(agent.id, token, blob, durationMs);
@@ -95,149 +121,141 @@ export default function MakerPage() {
     }
   }
 
-  async function onClone() {
-    if (!agent || !token) return;
-    setError(null);
-    setBusy(true);
-    try {
-      await cloneVoice(agent.id, token);
-      await refresh(agent.id, token);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   function reset() {
     localStorage.removeItem(STORAGE_KEY);
-    setAgent(null);
-    setToken(null);
-    setMemories([]);
+    window.location.reload();
+  }
+
+  if (booting) {
+    return (
+      <main style={{ maxWidth: 720, margin: "0 auto", padding: "2rem" }}>
+        <p style={{ color: "var(--muted)" }}>Starting maker…</p>
+      </main>
+    );
   }
 
   return (
     <main style={{ maxWidth: 720, margin: "0 auto", padding: "2rem 1.25rem 4rem" }}>
-      <header className="rise" style={{ marginBottom: "2.5rem" }}>
+      <header className="rise" style={{ marginBottom: "2rem" }}>
         <Link href="/" style={{ color: "var(--muted)", fontSize: "0.9rem" }}>
-          ← Ovyu
+          ← MIRA
         </Link>
         <h1
           style={{
             fontFamily: "var(--font-display)",
             fontSize: "clamp(2.4rem, 6vw, 3.4rem)",
             margin: "0.75rem 0 0.35rem",
-            letterSpacing: "-0.02em",
           }}
         >
           Maker
         </h1>
-        <p style={{ color: "var(--muted)", margin: 0, lineHeight: 1.55 }}>
-          Record memories. Clone your voice. Share a keeper link.
+        <p style={{ color: "var(--muted)", margin: 0 }}>
+          Add 3 text memories and 3 voice memories to unlock the keeper.
         </p>
+        <div
+          style={{
+            display: "flex",
+            gap: "1rem",
+            marginTop: "1rem",
+            color: "var(--muted)",
+            flexWrap: "wrap",
+          }}
+        >
+          <span>
+            Text:{" "}
+            <strong style={{ color: textIndexed >= 3 ? "var(--ok)" : "var(--ink)" }}>
+              {textIndexed}/3 indexed
+            </strong>{" "}
+            ({textCount} added)
+          </span>
+          <span>
+            Voice:{" "}
+            <strong style={{ color: voiceIndexed >= 3 ? "var(--ok)" : "var(--ink)" }}>
+              {voiceIndexed}/3 indexed
+            </strong>{" "}
+            ({voiceCount} added)
+          </span>
+        </div>
       </header>
 
-      {!agent || !token ? (
-        <form
-          onSubmit={onCreate}
-          className="rise"
-          style={{ display: "grid", gap: "0.85rem", maxWidth: 420 }}
-        >
-          <label style={{ display: "grid", gap: "0.4rem" }}>
-            <span style={{ color: "var(--muted)", fontSize: "0.9rem" }}>Your name</span>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Alex"
-              style={inputStyle}
-            />
-          </label>
-          <button type="submit" disabled={busy} style={primaryBtn}>
-            Create agent
+      {mode === "choose" && (
+        <section className="rise" style={{ display: "grid", gap: "0.85rem", maxWidth: 420 }}>
+          <button
+            type="button"
+            onClick={() => setMode("text")}
+            disabled={textCount >= 3}
+            style={primaryBtn}
+          >
+            Create text memories
           </button>
-        </form>
-      ) : (
-        <div style={{ display: "grid", gap: "2.25rem" }}>
-          <section className="rise" style={{ display: "grid", gap: "1rem" }}>
-            <StatusRow agent={agent} memories={memories} />
-            <Recorder onRecorded={onRecorded} />
-            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-              <button
-                type="button"
-                onClick={onClone}
-                disabled={busy || (agent.indexed_memories ?? 0) < 1}
-                style={primaryBtn}
-              >
-                Clone my voice
-              </button>
-              <button type="button" onClick={reset} style={ghostBtn}>
-                New maker
-              </button>
-            </div>
-          </section>
+          <button
+            type="button"
+            onClick={() => setMode("voice")}
+            disabled={voiceCount >= 3}
+            style={primaryBtn}
+          >
+            Create voice memories
+          </button>
+          <button type="button" onClick={reset} style={ghostBtn}>
+            Reset maker
+          </button>
+        </section>
+      )}
 
-          {keeperPath && (
-            <section className="rise" style={{ borderTop: "1px solid var(--line)", paddingTop: "1.5rem" }}>
-              <h2 style={{ fontFamily: "var(--font-display)", fontSize: "1.4rem", margin: "0 0 0.5rem" }}>
-                Keeper link
-              </h2>
-              <p style={{ color: "var(--muted)", margin: "0 0 0.75rem", fontSize: "0.95rem" }}>
-                Share this so someone can ask about your memories.
-              </p>
-              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
-                <code
-                  style={{
-                    flex: 1,
-                    minWidth: 200,
-                    padding: "0.7rem 0.85rem",
-                    border: "1px solid var(--line)",
-                    borderRadius: 10,
-                    color: "var(--ink)",
-                    background: "rgba(0,0,0,0.2)",
-                    wordBreak: "break-all",
-                    fontSize: "0.85rem",
-                  }}
-                >
-                  {typeof window !== "undefined" ? `${window.location.origin}${keeperPath}` : keeperPath}
-                </code>
-                <Link href={keeperPath} style={{ ...primaryBtn, display: "inline-block" }}>
-                  Open
-                </Link>
-              </div>
-            </section>
+      {mode === "text" && (
+        <section className="rise" style={{ display: "grid", gap: "1rem" }}>
+          <button type="button" onClick={() => setMode("choose")} style={ghostBtn}>
+            ← Back
+          </button>
+          {textCount >= 3 ? (
+            <p style={{ color: "var(--ok)" }}>All 3 text memories added.</p>
+          ) : (
+            <form onSubmit={onSaveText} style={{ display: "grid", gap: "0.75rem" }}>
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                rows={6}
+                placeholder="Write a memory…"
+                style={{ ...inputStyle, resize: "vertical", borderRadius: 14 }}
+              />
+              <button type="submit" disabled={busy || !text.trim()} style={primaryBtn}>
+                Save text memory ({textCount + 1}/3)
+              </button>
+            </form>
           )}
+          <MemoryList memories={memories.filter((m) => m.kind === "text")} />
+        </section>
+      )}
 
-          <section className="rise" style={{ borderTop: "1px solid var(--line)", paddingTop: "1.5rem" }}>
-            <h2 style={{ fontFamily: "var(--font-display)", fontSize: "1.4rem", margin: "0 0 1rem" }}>
-              Memories
-            </h2>
-            {memories.length === 0 ? (
-              <p style={{ color: "var(--muted)" }}>No memories yet — record your first one.</p>
-            ) : (
-              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "0.65rem" }}>
-                {memories.map((m) => (
-                  <li
-                    key={m.id}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      gap: "1rem",
-                      padding: "0.85rem 0",
-                      borderBottom: "1px solid var(--line)",
-                      fontSize: "0.95rem",
-                    }}
-                  >
-                    <span style={{ color: "var(--muted)" }}>
-                      {new Date(m.created_at).toLocaleString()}
-                      {m.duration_ms != null ? ` · ${Math.round(m.duration_ms / 1000)}s` : ""}
-                    </span>
-                    <span style={{ color: statusColor(m.status) }}>{m.status}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </div>
+      {mode === "voice" && (
+        <section className="rise" style={{ display: "grid", gap: "1rem" }}>
+          <button type="button" onClick={() => setMode("choose")} style={ghostBtn}>
+            ← Back
+          </button>
+          {voiceCount >= 3 ? (
+            <p style={{ color: "var(--ok)" }}>All 3 voice memories added.</p>
+          ) : (
+            <Recorder disabled={busy} onRecorded={onRecorded} />
+          )}
+          <MemoryList memories={memories.filter((m) => m.kind === "voice")} />
+        </section>
+      )}
+
+      {ready && keeperPath && (
+        <section
+          className="rise"
+          style={{ marginTop: "2.5rem", borderTop: "1px solid var(--line)", paddingTop: "1.5rem" }}
+        >
+          <h2 style={{ fontFamily: "var(--font-display)", fontSize: "1.4rem", margin: "0 0 0.5rem" }}>
+            Keeper unlocked
+          </h2>
+          <p style={{ color: "var(--muted)", margin: "0 0 0.85rem" }}>
+            You have 3 text and 3 voice memories. Share this link:
+          </p>
+          <Link href={keeperPath} style={{ ...primaryBtn, display: "inline-block" }}>
+            Open keeper chat
+          </Link>
+        </section>
       )}
 
       {error && (
@@ -247,32 +265,34 @@ export default function MakerPage() {
   );
 }
 
-function StatusRow({ agent, memories }: { agent: Agent; memories: Memory[] }) {
-  const indexed = agent.indexed_memories ?? memories.filter((m) => m.status === "indexed").length;
-  const voiceReady = Boolean(agent.elevenlabs_voice_id) && agent.status === "ready";
+function MemoryList({ memories }: { memories: Memory[] }) {
+  if (memories.length === 0) return null;
   return (
-    <div style={{ display: "flex", gap: "1.25rem", flexWrap: "wrap", color: "var(--muted)" }}>
-      <span>
-        <strong style={{ color: "var(--ink)", fontWeight: 600 }}>{agent.display_name}</strong>
-      </span>
-      <span>
-        Memories indexed:{" "}
-        <strong style={{ color: "var(--ink)" }}>{indexed}</strong>
-      </span>
-      <span>
-        Voice:{" "}
-        <strong style={{ color: voiceReady ? "var(--ok)" : "var(--accent)" }}>
-          {agent.status === "cloning" ? "cloning…" : voiceReady ? "ready" : "not cloned"}
-        </strong>
-      </span>
-    </div>
+    <ul style={{ listStyle: "none", margin: "0.5rem 0 0", padding: 0, display: "grid", gap: "0.5rem" }}>
+      {memories.map((m) => (
+        <li
+          key={m.id}
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: "1rem",
+            padding: "0.7rem 0",
+            borderBottom: "1px solid var(--line)",
+            fontSize: "0.92rem",
+          }}
+        >
+          <span style={{ color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {m.kind === "text"
+              ? (m.text_content || "Text memory").slice(0, 80)
+              : `Voice · ${m.duration_ms != null ? `${Math.round(m.duration_ms / 1000)}s` : "audio"}`}
+          </span>
+          <span style={{ color: m.status === "indexed" ? "var(--ok)" : "var(--accent)" }}>
+            {m.status}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
-}
-
-function statusColor(status: string): string {
-  if (status === "indexed") return "var(--ok)";
-  if (status === "error") return "var(--danger)";
-  return "var(--accent)";
 }
 
 const inputStyle: React.CSSProperties = {
@@ -301,4 +321,5 @@ const ghostBtn: React.CSSProperties = {
   padding: "0.75rem 1.2rem",
   borderRadius: 999,
   cursor: "pointer",
+  width: "fit-content",
 };

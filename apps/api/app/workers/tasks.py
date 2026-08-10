@@ -9,13 +9,46 @@ from app.config import get_settings
 from app.db import queries
 from app.db.pool import admin_connection, init_pool
 from app.services import assemblyai, elevenlabs, voyage
-from app.services.chunking import chunk_utterances
+from app.services.chunking import TextChunk, chunk_utterances
 
 logger = logging.getLogger(__name__)
 
 
+async def _embed_and_store(
+    *,
+    agent_id: UUID,
+    memory_id: UUID,
+    texts: list[str],
+    document_context: str,
+    meta: list[tuple[str | None, float | None, float | None]] | None = None,
+) -> None:
+    embeddings = await voyage.embed_documents(texts, document_context=document_context or None)
+    if len(embeddings) < len(texts):
+        rest = await voyage.embed_documents(texts[len(embeddings) :])
+        embeddings.extend(rest)
+    embeddings = embeddings[: len(texts)]
+
+    async with admin_connection() as conn:
+        await queries.delete_chunks_for_memory(conn, memory_id)
+        for i, (text, emb) in enumerate(zip(texts, embeddings)):
+            speaker, ts_start, ts_end = (None, None, None)
+            if meta and i < len(meta):
+                speaker, ts_start, ts_end = meta[i]
+            await queries.insert_chunk(
+                conn,
+                agent_id=agent_id,
+                memory_id=memory_id,
+                text=text,
+                speaker=speaker,
+                ts_start=ts_start,
+                ts_end=ts_end,
+                embedding=emb,
+            )
+        await queries.update_memory_status(conn, memory_id, "indexed")
+
+
 async def ingest_memory(ctx: dict, memory_id: str) -> None:
-    """Transcribe → chunk → embed → upsert chunks."""
+    """Ingest text or voice memory → chunk → embed → upsert chunks."""
     await init_pool()
     mid = UUID(memory_id)
     settings = get_settings()
@@ -26,70 +59,73 @@ async def ingest_memory(ctx: dict, memory_id: str) -> None:
             logger.error("Memory %s not found", memory_id)
             return
         agent_id: UUID = memory["agent_id"]
-        audio_uri: str = memory["audio_uri"]
-        await queries.update_memory_status(conn, mid, "transcribing")
-
-    audio_path = Path(audio_uri)
-    if not audio_path.is_absolute():
-        audio_path = settings.audio_dir / audio_path.name
+        kind = memory["kind"] or "voice"
 
     try:
-        transcript = await asyncio.to_thread(assemblyai.transcribe_file, audio_path)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Transcription failed for %s", memory_id)
-        async with admin_connection() as conn:
-            await queries.update_memory_status(
-                conn, mid, "error", error_message=str(exc)[:1000]
-            )
-        return
-
-    async with admin_connection() as conn:
-        await queries.update_memory_status(
-            conn, mid, "embedding", transcript_id=transcript.transcript_id
-        )
-
-    chunks = chunk_utterances(transcript.utterances)
-    if not chunks and transcript.text:
-        from app.services.chunking import TextChunk
-
-        chunks = [TextChunk(text=transcript.text, speaker=None, ts_start=None, ts_end=None)]
-
-    try:
-        texts = [c.text for c in chunks]
-        embeddings = await voyage.embed_documents(
-            texts, document_context=transcript.text or None
-        )
-        if len(embeddings) != len(chunks):
-            # pad/truncate safely
-            if len(embeddings) < len(chunks):
-                # embed remainder without context
-                rest = await voyage.embed_documents(texts[len(embeddings) :])
-                embeddings.extend(rest)
-            embeddings = embeddings[: len(chunks)]
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Embedding failed for %s", memory_id)
-        async with admin_connection() as conn:
-            await queries.update_memory_status(
-                conn, mid, "error", error_message=str(exc)[:1000]
-            )
-        return
-
-    async with admin_connection() as conn:
-        await queries.delete_chunks_for_memory(conn, mid)
-        for chunk, emb in zip(chunks, embeddings, strict=False):
-            await queries.insert_chunk(
-                conn,
+        if kind == "text":
+            text = (memory["text_content"] or "").strip()
+            if not text:
+                raise RuntimeError("Empty text memory")
+            async with admin_connection() as conn:
+                await queries.update_memory_status(conn, mid, "embedding")
+            await _embed_and_store(
                 agent_id=agent_id,
                 memory_id=mid,
-                text=chunk.text,
-                speaker=chunk.speaker,
-                ts_start=chunk.ts_start,
-                ts_end=chunk.ts_end,
-                embedding=emb,
+                texts=[text],
+                document_context=text,
+                meta=[(None, None, None)],
             )
-        await queries.update_memory_status(conn, mid, "indexed")
+        else:
+            audio_uri = memory["audio_uri"]
+            if not audio_uri:
+                raise RuntimeError("Voice memory missing audio")
+            async with admin_connection() as conn:
+                await queries.update_memory_status(conn, mid, "transcribing")
 
-    logger.info("Indexed memory %s (%d chunks)", memory_id, len(chunks))
+            audio_path = Path(audio_uri)
+            if not audio_path.is_absolute():
+                audio_path = settings.audio_dir / audio_path.name
+
+            transcript = await asyncio.to_thread(assemblyai.transcribe_file, audio_path)
+            async with admin_connection() as conn:
+                await queries.update_memory_status(
+                    conn, mid, "embedding", transcript_id=transcript.transcript_id
+                )
+
+            chunks = chunk_utterances(transcript.utterances)
+            if not chunks and transcript.text:
+                chunks = [
+                    TextChunk(text=transcript.text, speaker=None, ts_start=None, ts_end=None)
+                ]
+            if not chunks:
+                raise RuntimeError("No transcript text")
+
+            await _embed_and_store(
+                agent_id=agent_id,
+                memory_id=mid,
+                texts=[c.text for c in chunks],
+                document_context=transcript.text or "",
+                meta=[(c.speaker, c.ts_start, c.ts_end) for c in chunks],
+            )
+
+            # Auto-clone once we have enough voice samples
+            async with admin_connection() as conn:
+                voice_n = await queries.count_indexed_by_kind(conn, agent_id, "voice")
+                agent = await queries.get_agent(conn, agent_id)
+            if (
+                voice_n >= queries.REQUIRED_VOICE_MEMORIES
+                and agent
+                and not agent["elevenlabs_voice_id"]
+            ):
+                await clone_agent_voice(ctx, str(agent_id))
+
+        logger.info("Indexed memory %s", memory_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Ingest failed for %s", memory_id)
+        async with admin_connection() as conn:
+            await queries.update_memory_status(
+                conn, mid, "error", error_message=str(exc)[:1000]
+            )
 
 
 async def clone_agent_voice(ctx: dict, agent_id: str) -> None:
@@ -119,7 +155,7 @@ async def clone_agent_voice(ctx: dict, agent_id: str) -> None:
         return
 
     try:
-        voice_id = await elevenlabs.clone_voice(f"ovyu-{display_name}", audio_paths)
+        voice_id = await elevenlabs.clone_voice(f"mira-{display_name}", audio_paths)
     except Exception:  # noqa: BLE001
         logger.exception("Voice clone failed for %s", agent_id)
         async with admin_connection() as conn:

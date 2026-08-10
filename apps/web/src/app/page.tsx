@@ -1,4 +1,23 @@
 import Link from "next/link";
+import type { CSSProperties } from "react";
+
+const btn: CSSProperties = {
+  display: "inline-block",
+  minWidth: 180,
+  textAlign: "center",
+  background: "var(--accent)",
+  color: "#1a140c",
+  padding: "0.95rem 1.5rem",
+  borderRadius: 999,
+  fontWeight: 600,
+};
+
+const ghost: CSSProperties = {
+  ...btn,
+  background: "transparent",
+  color: "var(--ink)",
+  border: "1px solid var(--line)",
+};
 
 export default function HomePage() {
   return (
@@ -33,34 +52,17 @@ export default function HomePage() {
             lineHeight: 1,
           }}
         >
-          Ovyu
+          MIRA
         </p>
-        <h1
-          style={{
-            fontWeight: 500,
-            fontSize: "clamp(1.1rem, 2.5vw, 1.35rem)",
-            margin: "1.25rem 0 0.5rem",
-            color: "var(--ink)",
-          }}
-        >
-          Memories that speak — and stay honest.
-        </h1>
-        <p style={{ color: "var(--muted)", margin: "0 0 2rem", lineHeight: 1.6 }}>
-          Record what matters. Clone the voice. Let a keeper ask — answers only from what was said.
+        <p style={{ color: "var(--muted)", margin: "1.25rem 0 2rem", lineHeight: 1.6 }}>
+          Add memories as the maker. Ask about them as the keeper.
         </p>
-        <div style={{ display: "flex", gap: "0.75rem", justifyContent: "center", flexWrap: "wrap" }}>
-          <Link
-            href="/maker"
-            style={{
-              background: "var(--accent)",
-              color: "#1a140c",
-              padding: "0.85rem 1.4rem",
-              borderRadius: 999,
-              fontWeight: 600,
-              transition: "transform 0.2s ease",
-            }}
-          >
-            Start as maker
+        <div style={{ display: "flex", gap: "0.85rem", justifyContent: "center", flexWrap: "wrap" }}>
+          <Link href="/maker" style={btn}>
+            Maker
+          </Link>
+          <Link href="/keeper" style={ghost}>
+            Keeper
           </Link>
         </div>
       </section>

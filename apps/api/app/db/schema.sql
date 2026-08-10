@@ -17,7 +17,10 @@ CREATE TABLE IF NOT EXISTS agents (
 CREATE TABLE IF NOT EXISTS memories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    audio_uri TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'voice'
+        CHECK (kind IN ('text', 'voice')),
+    text_content TEXT,
+    audio_uri TEXT,
     duration_ms INTEGER,
     assemblyai_transcript_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending'
@@ -79,11 +82,18 @@ ALTER TABLE chat_sessions FORCE ROW LEVEL SECURITY;
 ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE messages FORCE ROW LEVEL SECURITY;
 
--- Allow insert of new agents without tenant context (bootstrap)
+-- Policies (drop+create for idempotent migrate)
+DROP POLICY IF EXISTS agents_insert ON agents;
+DROP POLICY IF EXISTS agents_select ON agents;
+DROP POLICY IF EXISTS agents_update ON agents;
+DROP POLICY IF EXISTS memories_all ON memories;
+DROP POLICY IF EXISTS chunks_all ON chunks;
+DROP POLICY IF EXISTS chat_sessions_all ON chat_sessions;
+DROP POLICY IF EXISTS messages_all ON messages;
+
 CREATE POLICY agents_insert ON agents
     FOR INSERT WITH CHECK (true);
 
--- Agents: allow select/update only for current agent; insert is done by service role bypass
 CREATE POLICY agents_select ON agents
     FOR SELECT USING (id::text = current_setting('app.current_agent_id', true));
 
@@ -105,6 +115,3 @@ CREATE POLICY chat_sessions_all ON chat_sessions
 CREATE POLICY messages_all ON messages
     FOR ALL USING (agent_id::text = current_setting('app.current_agent_id', true))
     WITH CHECK (agent_id::text = current_setting('app.current_agent_id', true));
-
--- Bypass role for bootstrap (app connects as owner by default in demo;
--- use set_config for tenant scoping on every request).

@@ -1,8 +1,8 @@
 [project]
-name = "ovyu-demo-api"
+name = "mira-api"
 version = "0.1.0"
-description = "Ovyu memory + voice clone demo API"
-requires-python = ">=3.11"
+description = "MIRA memory + voice clone demo API"
+requires-python = ">=3.9"
 dependencies = [
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.32.0",
@@ -14,6 +14,7 @@ dependencies = [
   "anthropic>=0.40.0",
   "assemblyai>=0.35.0",
   "numpy>=2.0.0",
+  "eval_type_backport>=0.2.0",
 ]
 
 [project.optional-dependencies]

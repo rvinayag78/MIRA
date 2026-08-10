@@ -36,7 +36,7 @@ async def clone_voice(name: str, audio_paths: list[Path]) -> str:
 
         data = {
             "name": name[:100],
-            "description": "Ovyu demo memory voice",
+            "description": "MIRA demo memory voice",
         }
         async with httpx.AsyncClient(timeout=180.0) as client:
             resp = await client.post(

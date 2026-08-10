@@ -9,12 +9,19 @@ export type Agent = {
   share_token?: string | null;
   keeper_url?: string | null;
   indexed_memories?: number | null;
+  text_indexed: number;
+  voice_indexed: number;
+  text_required: number;
+  voice_required: number;
+  ready_for_keeper: boolean;
 };
 
 export type Memory = {
   id: string;
   agent_id: string;
-  audio_uri: string;
+  kind: "text" | "voice";
+  text_content: string | null;
+  audio_uri: string | null;
   duration_ms: number | null;
   status: string;
   error_message: string | null;
@@ -32,6 +39,8 @@ export type ChatResponse = {
   intent: string;
   audio_url: string | null;
 };
+
+export const STORAGE_KEY = "mira_maker_agent";
 
 export function apiUrl(path: string): string {
   return `${API_URL}${path}`;
@@ -64,6 +73,20 @@ export async function listMemories(agentId: string, token: string): Promise<Memo
   return res.json();
 }
 
+export async function createTextMemory(
+  agentId: string,
+  token: string,
+  text: string,
+): Promise<Memory> {
+  const res = await fetch(apiUrl("/memories/text"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent_id: agentId, token, text }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function uploadMemory(
   agentId: string,
   token: string,
@@ -76,15 +99,6 @@ export async function uploadMemory(
   if (durationMs != null) form.append("duration_ms", String(durationMs));
   form.append("file", blob, "recording.webm");
   const res = await fetch(apiUrl("/memories"), { method: "POST", body: form });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-export async function cloneVoice(agentId: string, token: string): Promise<Agent> {
-  const res = await fetch(apiUrl(`/agents/${agentId}/clone-voice`), {
-    method: "POST",
-    headers: { "X-Agent-Token": token },
-  });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }

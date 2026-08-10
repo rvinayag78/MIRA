@@ -1,1 +1,1 @@
-"""Ovyu demo API."""
+"""MIRA demo API."""

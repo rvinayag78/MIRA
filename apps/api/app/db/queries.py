@@ -81,18 +81,30 @@ async def set_agent_status(conn: asyncpg.Connection, agent_id: UUID, status: str
     await conn.execute("UPDATE agents SET status = $2 WHERE id = $1", agent_id, status)
 
 
+REQUIRED_TEXT_MEMORIES = 3
+REQUIRED_VOICE_MEMORIES = 3
+
+
 async def create_memory(
-    conn: asyncpg.Connection, agent_id: UUID, audio_uri: str, duration_ms: int | None
+    conn: asyncpg.Connection,
+    agent_id: UUID,
+    *,
+    kind: str,
+    audio_uri: str | None = None,
+    text_content: str | None = None,
+    duration_ms: int | None = None,
 ) -> asyncpg.Record:
     row = await conn.fetchrow(
         """
-        INSERT INTO memories (agent_id, audio_uri, duration_ms, status)
-        VALUES ($1, $2, $3, 'pending')
-        RETURNING id, agent_id, audio_uri, duration_ms, status, error_message, created_at,
-                  assemblyai_transcript_id
+        INSERT INTO memories (agent_id, kind, audio_uri, text_content, duration_ms, status)
+        VALUES ($1, $2, $3, $4, $5, 'pending')
+        RETURNING id, agent_id, kind, text_content, audio_uri, duration_ms, status,
+                  error_message, created_at, assemblyai_transcript_id
         """,
         agent_id,
+        kind,
         audio_uri,
+        text_content,
         duration_ms,
     )
     assert row is not None
@@ -102,7 +114,7 @@ async def create_memory(
 async def list_memories(conn: asyncpg.Connection, agent_id: UUID) -> list[asyncpg.Record]:
     return await conn.fetch(
         """
-        SELECT id, agent_id, audio_uri, duration_ms, status, error_message,
+        SELECT id, agent_id, kind, text_content, audio_uri, duration_ms, status, error_message,
                assemblyai_transcript_id, created_at
         FROM memories
         WHERE agent_id = $1
@@ -115,7 +127,7 @@ async def list_memories(conn: asyncpg.Connection, agent_id: UUID) -> list[asyncp
 async def get_memory(conn: asyncpg.Connection, memory_id: UUID) -> asyncpg.Record | None:
     return await conn.fetchrow(
         """
-        SELECT id, agent_id, audio_uri, duration_ms, status, error_message,
+        SELECT id, agent_id, kind, text_content, audio_uri, duration_ms, status, error_message,
                assemblyai_transcript_id, created_at
         FROM memories WHERE id = $1
         """,
@@ -190,11 +202,47 @@ async def count_indexed_memories(conn: asyncpg.Connection, agent_id: UUID) -> in
     )
 
 
+async def count_indexed_by_kind(conn: asyncpg.Connection, agent_id: UUID, kind: str) -> int:
+    return int(
+        await conn.fetchval(
+            """
+            SELECT COUNT(*) FROM memories
+            WHERE agent_id = $1 AND kind = $2 AND status = 'indexed'
+            """,
+            agent_id,
+            kind,
+        )
+    )
+
+
+async def count_by_kind(conn: asyncpg.Connection, agent_id: UUID, kind: str) -> int:
+    return int(
+        await conn.fetchval(
+            "SELECT COUNT(*) FROM memories WHERE agent_id = $1 AND kind = $2",
+            agent_id,
+            kind,
+        )
+    )
+
+
+async def readiness(conn: asyncpg.Connection, agent_id: UUID) -> dict[str, Any]:
+    text_n = await count_indexed_by_kind(conn, agent_id, "text")
+    voice_n = await count_indexed_by_kind(conn, agent_id, "voice")
+    return {
+        "text_indexed": text_n,
+        "voice_indexed": voice_n,
+        "text_required": REQUIRED_TEXT_MEMORIES,
+        "voice_required": REQUIRED_VOICE_MEMORIES,
+        "ready_for_keeper": text_n >= REQUIRED_TEXT_MEMORIES
+        and voice_n >= REQUIRED_VOICE_MEMORIES,
+    }
+
+
 async def list_memory_audio_paths(conn: asyncpg.Connection, agent_id: UUID) -> list[str]:
     rows = await conn.fetch(
         """
         SELECT audio_uri FROM memories
-        WHERE agent_id = $1 AND status = 'indexed'
+        WHERE agent_id = $1 AND kind = 'voice' AND status = 'indexed' AND audio_uri IS NOT NULL
         ORDER BY created_at ASC
         """,
         agent_id,

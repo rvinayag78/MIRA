@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -20,17 +20,30 @@ class AgentOut(BaseModel):
     share_token: str | None = None
     keeper_url: str | None = None
     indexed_memories: int | None = None
+    text_indexed: int = 0
+    voice_indexed: int = 0
+    text_required: int = 3
+    voice_required: int = 3
+    ready_for_keeper: bool = False
 
 
 class MemoryOut(BaseModel):
     id: UUID
     agent_id: UUID
-    audio_uri: str
+    kind: Literal["text", "voice"] = "voice"
+    text_content: str | None = None
+    audio_uri: str | None = None
     duration_ms: int | None = None
     status: str
     error_message: str | None = None
     assemblyai_transcript_id: str | None = None
     created_at: datetime
+
+
+class TextMemoryCreate(BaseModel):
+    agent_id: UUID
+    token: str
+    text: str = Field(min_length=1, max_length=8000)
 
 
 class ChatRequest(BaseModel):

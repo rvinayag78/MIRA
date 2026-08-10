@@ -13,7 +13,7 @@ const body = DM_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Ovyu — Memory voice agent",
+  title: "MIRA — Memory voice agent",
   description: "Record memories, clone a voice, answer keepers without inventing.",
 };
 

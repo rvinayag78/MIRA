@@ -27,7 +27,7 @@ async def lifespan(_: FastAPI):
     await close_pool()
 
 
-app = FastAPI(title="Ovyu Demo Agent API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="MIRA Demo Agent API", version="0.1.0", lifespan=lifespan)
 settings = get_settings()
 app.add_middleware(
     CORSMiddleware,

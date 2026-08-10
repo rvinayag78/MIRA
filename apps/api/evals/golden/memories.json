@@ -1,0 +1,65 @@
+{
+  "agent_display_name": "Golden Fixture",
+  "memories": [
+    {
+      "id": "mem-1",
+      "transcript": "My childhood home was a blue bungalow on Maple Street in Portland. We had a cherry tree in the front yard that bloomed every April. My sister Lena and I carved our initials into the porch railing in 1998.",
+      "chunks": [
+        {
+          "id": "chunk-home-1",
+          "text": "My childhood home was a blue bungalow on Maple Street in Portland. We had a cherry tree in the front yard that bloomed every April."
+        },
+        {
+          "id": "chunk-home-2",
+          "text": "My sister Lena and I carved our initials into the porch railing in 1998."
+        }
+      ]
+    },
+    {
+      "id": "mem-2",
+      "transcript": "I worked at Harbor Bakery from 2010 to 2014. My favorite item to bake was cardamom buns on Saturday mornings. The owner, Mr. Patel, taught me to proof dough overnight.",
+      "chunks": [
+        {
+          "id": "chunk-job-1",
+          "text": "I worked at Harbor Bakery from 2010 to 2014. My favorite item to bake was cardamom buns on Saturday mornings."
+        },
+        {
+          "id": "chunk-job-2",
+          "text": "The owner, Mr. Patel, taught me to proof dough overnight."
+        }
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "id": "q1",
+      "question": "Where was the childhood home and what color was it?",
+      "relevant_chunk_ids": ["chunk-home-1"],
+      "must_refuse": false
+    },
+    {
+      "id": "q2",
+      "question": "Who is Lena and what did they carve?",
+      "relevant_chunk_ids": ["chunk-home-2"],
+      "must_refuse": false
+    },
+    {
+      "id": "q3",
+      "question": "Where did they work and what did they like to bake?",
+      "relevant_chunk_ids": ["chunk-job-1"],
+      "must_refuse": false
+    },
+    {
+      "id": "q4",
+      "question": "What is the capital of France?",
+      "relevant_chunk_ids": [],
+      "must_refuse": true
+    },
+    {
+      "id": "q5",
+      "question": "Did they ever live in Tokyo?",
+      "relevant_chunk_ids": [],
+      "must_refuse": true
+    }
+  ]
+}

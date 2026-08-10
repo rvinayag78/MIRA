@@ -25,6 +25,16 @@ async def chat(body: ChatRequest) -> ChatResponse:
     agent_id = agent["id"]
 
     async with agent_connection(agent_id) as conn:
+        ready = await queries.readiness(conn, agent_id)
+        if not ready["ready_for_keeper"]:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Keeper chat unlocks after {ready['text_required']} text and "
+                    f"{ready['voice_required']} voice memories "
+                    f"(have {ready['text_indexed']} text, {ready['voice_indexed']} voice)."
+                ),
+            )
         session_id = body.session_id or await queries.create_session(conn, agent_id)
         await queries.insert_message(
             conn,

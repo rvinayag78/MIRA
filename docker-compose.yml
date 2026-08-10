@@ -2,16 +2,16 @@ services:
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: ovyu
-      POSTGRES_PASSWORD: ovyu
-      POSTGRES_DB: ovyu
+      POSTGRES_USER: mira
+      POSTGRES_PASSWORD: mira
+      POSTGRES_DB: mira
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./apps/api/app/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ovyu -d ovyu"]
+      test: ["CMD-SHELL", "pg_isready -U mira -d mira"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -34,7 +34,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://ovyu:ovyu@db:5432/ovyu
+      DATABASE_URL: postgresql://mira:mira@db:5432/mira
       REDIS_URL: redis://redis:6379
       AUDIO_DIR: /data/audio
       TTS_DIR: /data/tts
@@ -58,7 +58,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://ovyu:ovyu@db:5432/ovyu
+      DATABASE_URL: postgresql://mira:mira@db:5432/mira
       REDIS_URL: redis://redis:6379
       AUDIO_DIR: /data/audio
       TTS_DIR: /data/tts
