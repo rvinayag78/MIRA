@@ -16,8 +16,15 @@ class VoyageError(RuntimeError):
 async def embed_documents(texts: list[str], *, document_context: str | None = None) -> list[list[float]]:
     """
     Embed with voyage-context-4 at 1024d.
-    Uses contextualized embeddings when a document context is provided.
-    Falls back to standard embeddings API if contextualized endpoint fails.
+
+    When document_context is provided, treat `texts` as pre-chunked pieces of one
+    document and call the contextualized embeddings API with inputs=[texts] so each
+    chunk is embedded in the context of its siblings. Falls back to the standard
+    embeddings API if contextualized fails or returns the wrong count.
+
+    `document_context` is a mode flag (truthy → document/contextualized path). The
+    sibling chunks themselves supply document context; do not prepend a synthetic
+    full-document chunk (that previously caused every chunk to store the wrong vector).
     """
     if not texts:
         return []
@@ -30,11 +37,12 @@ async def embed_documents(texts: list[str], *, document_context: str | None = No
         "Content-Type": "application/json",
     }
 
-    # Prefer contextualized embeddings API
+    # Prefer contextualized embeddings API for document chunks.
+    # Correct shape: one inner list = one document's chunks (not [full_doc, chunk] pairs).
     if document_context is not None:
         payload: dict[str, Any] = {
             "model": settings.voyage_embed_model,
-            "inputs": [[document_context, t] for t in texts],
+            "inputs": [texts],
             "input_type": "document",
             "output_dimension": settings.voyage_embed_dim,
         }
@@ -45,9 +53,13 @@ async def embed_documents(texts: list[str], *, document_context: str | None = No
                 json=payload,
             )
             if resp.status_code < 400:
-                data = resp.json()
-                # Response shape: data[].data[].embedding or data[].embeddings
-                return _parse_contextualized(data)
+                try:
+                    parsed = _parse_contextualized(resp.json())
+                    if len(parsed) == len(texts):
+                        return parsed
+                except VoyageError:
+                    # Fall through to standard embeddings
+                    pass
 
     # Standard embeddings fallback / query path
     payload = {
@@ -94,21 +106,29 @@ async def embed_query(query: str) -> list[float]:
 
 
 def _parse_contextualized(data: dict[str, Any]) -> list[list[float]]:
+    """Flatten contextualized response into one embedding per input chunk, in order."""
     out: list[list[float]] = []
     for item in data.get("data", []):
         if "embedding" in item:
             out.append(item["embedding"])
-        elif "data" in item:
-            # nested: list of chunk embeddings per document
-            nested = item["data"]
-            if nested and "embedding" in nested[0]:
-                # we sent one chunk per input pair; take first
-                out.append(nested[0]["embedding"])
-            elif nested and "embeddings" in nested[0]:
-                out.append(nested[0]["embeddings"][0])
-        elif "embeddings" in item:
+            continue
+        if "data" in item:
+            # Nested: one document → list of chunk embeddings (must keep all, not just [0])
+            nested = sorted(item["data"] or [], key=lambda x: x.get("index", 0))
+            for nest in nested:
+                if "embedding" in nest:
+                    out.append(nest["embedding"])
+                elif "embeddings" in nest:
+                    emb = nest["embeddings"]
+                    out.append(emb[0] if emb and isinstance(emb[0], list) else emb)
+            continue
+        if "embeddings" in item:
             emb = item["embeddings"]
-            out.append(emb[0] if isinstance(emb[0], list) else emb)
+            # SDK-style: embeddings is List[List[float]] for all chunks in the document
+            if emb and isinstance(emb[0], list):
+                out.extend(emb)
+            else:
+                out.append(emb)
     if not out:
         raise VoyageError(f"Unexpected Voyage contextualized response: {data}")
     return out

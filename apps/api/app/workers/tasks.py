@@ -26,7 +26,10 @@ async def _embed_and_store(
     if len(embeddings) < len(texts):
         rest = await voyage.embed_documents(texts[len(embeddings) :])
         embeddings.extend(rest)
-    embeddings = embeddings[: len(texts)]
+    if len(embeddings) != len(texts):
+        raise RuntimeError(
+            f"Embedding count mismatch: got {len(embeddings)} vectors for {len(texts)} chunks"
+        )
 
     async with admin_connection() as conn:
         await queries.delete_chunks_for_memory(conn, memory_id)
