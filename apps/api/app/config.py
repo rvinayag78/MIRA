@@ -5,9 +5,18 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Repo root: apps/api/app/config.py → ../../..
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_ENV_CANDIDATES = (_REPO_ROOT / ".env", Path(".env"))
+_ENV_FILES = tuple(str(p) for p in _ENV_CANDIDATES if p.exists())
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILES or ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     database_url: str = "postgresql://mira:mira@localhost:5432/mira"
     redis_url: str = "redis://localhost:6379"

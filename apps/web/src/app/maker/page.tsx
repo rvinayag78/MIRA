@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Recorder } from "@/components/Recorder";
+import { VoiceUpload } from "@/components/VoiceUpload";
 import {
   Agent,
   Memory,
@@ -121,6 +122,20 @@ export default function MakerPage() {
     }
   }
 
+  async function onUploaded(blob: Blob, filename: string, durationMs?: number) {
+    if (!agent || !token || voiceCount >= 3) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await uploadMemory(agent.id, token, blob, durationMs, filename);
+      await refresh(agent.id, token);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function reset() {
     localStorage.removeItem(STORAGE_KEY);
     window.location.reload();
@@ -235,7 +250,24 @@ export default function MakerPage() {
           {voiceCount >= 3 ? (
             <p style={{ color: "var(--ok)" }}>All 3 voice memories added.</p>
           ) : (
-            <Recorder disabled={busy} onRecorded={onRecorded} />
+            <div style={{ display: "grid", gap: "1.5rem", justifyItems: "center" }}>
+              <Recorder disabled={busy} onRecorded={onRecorded} />
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.75rem",
+                  width: "min(100%, 320px)",
+                  color: "var(--muted)",
+                  fontSize: "0.85rem",
+                }}
+              >
+                <span style={{ flex: 1, height: 1, background: "var(--line)" }} />
+                or
+                <span style={{ flex: 1, height: 1, background: "var(--line)" }} />
+              </div>
+              <VoiceUpload disabled={busy} onUploaded={onUploaded} />
+            </div>
           )}
           <MemoryList memories={memories.filter((m) => m.kind === "voice")} />
         </section>

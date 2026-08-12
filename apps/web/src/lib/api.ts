@@ -92,12 +92,13 @@ export async function uploadMemory(
   token: string,
   blob: Blob,
   durationMs?: number,
+  filename = "recording.webm",
 ): Promise<Memory> {
   const form = new FormData();
   form.append("agent_id", agentId);
   form.append("token", token);
   if (durationMs != null) form.append("duration_ms", String(durationMs));
-  form.append("file", blob, "recording.webm");
+  form.append("file", blob, filename);
   const res = await fetch(apiUrl("/memories"), { method: "POST", body: form });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
