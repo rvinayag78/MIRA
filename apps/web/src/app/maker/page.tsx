@@ -29,11 +29,11 @@ export default function MakerPage() {
   const [booting, setBooting] = useState(true);
 
   const textCount = useMemo(
-    () => memories.filter((m) => m.kind === "text").length,
+    () => memories.filter((m) => m.kind === "text" && m.status !== "error").length,
     [memories],
   );
   const voiceCount = useMemo(
-    () => memories.filter((m) => m.kind === "voice").length,
+    () => memories.filter((m) => m.kind === "voice" && m.status !== "error").length,
     [memories],
   );
   const textIndexed = agent?.text_indexed ?? 0;
