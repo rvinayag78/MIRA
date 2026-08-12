@@ -225,6 +225,20 @@ async def count_by_kind(conn: asyncpg.Connection, agent_id: UUID, kind: str) -> 
     )
 
 
+async def count_active_by_kind(conn: asyncpg.Connection, agent_id: UUID, kind: str) -> int:
+    """Count memories that still occupy a slot (exclude failed ingestions)."""
+    return int(
+        await conn.fetchval(
+            """
+            SELECT COUNT(*) FROM memories
+            WHERE agent_id = $1 AND kind = $2 AND status <> 'error'
+            """,
+            agent_id,
+            kind,
+        )
+    )
+
+
 async def readiness(conn: asyncpg.Connection, agent_id: UUID) -> dict[str, Any]:
     text_n = await count_indexed_by_kind(conn, agent_id, "text")
     voice_n = await count_indexed_by_kind(conn, agent_id, "voice")

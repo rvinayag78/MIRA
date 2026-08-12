@@ -42,7 +42,7 @@ async def create_text_memory(body: TextMemoryCreate) -> MemoryOut:
         raise HTTPException(status_code=400, detail="Text is required")
 
     async with agent_connection(body.agent_id) as conn:
-        total = await queries.count_by_kind(conn, body.agent_id, "text")
+        total = await queries.count_active_by_kind(conn, body.agent_id, "text")
         if total >= queries.REQUIRED_TEXT_MEMORIES:
             raise HTTPException(
                 status_code=400,
@@ -72,7 +72,7 @@ async def upload_memory(
         raise HTTPException(status_code=403, detail="Invalid agent token")
 
     async with agent_connection(agent_id) as conn:
-        total = await queries.count_by_kind(conn, agent_id, "voice")
+        total = await queries.count_active_by_kind(conn, agent_id, "voice")
         if total >= queries.REQUIRED_VOICE_MEMORIES:
             raise HTTPException(
                 status_code=400,
