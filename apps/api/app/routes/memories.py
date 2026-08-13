@@ -14,6 +14,9 @@ from app.schemas import MemoryOut, TextMemoryCreate
 
 router = APIRouter(tags=["memories"])
 
+# Cap voice uploads to avoid unbounded memory/disk buffering (DoS).
+MAX_AUDIO_BYTES = 25 * 1024 * 1024
+
 
 def _row_to_memory(row) -> MemoryOut:
     return MemoryOut(
@@ -28,6 +31,33 @@ def _row_to_memory(row) -> MemoryOut:
         assemblyai_transcript_id=row["assemblyai_transcript_id"],
         created_at=row["created_at"],
     )
+
+
+async def enqueue_ingest_or_rollback(
+    memory_id: UUID,
+    *,
+    audio_path: Path | None = None,
+) -> None:
+    """
+    Enqueue ingest after the memory row is committed.
+
+    If Redis/queue is down, delete the orphaned pending row (and audio file) so
+    the maker slot is not permanently consumed with status=pending.
+    """
+    try:
+        await queue.enqueue_ingest(str(memory_id))
+    except Exception as exc:  # noqa: BLE001
+        async with admin_connection() as conn:
+            await queries.delete_memory(conn, memory_id)
+        if audio_path is not None:
+            try:
+                audio_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise HTTPException(
+            status_code=503,
+            detail=f"Ingest queue unavailable: {exc}",
+        ) from exc
 
 
 @router.post("/memories/text", response_model=MemoryOut)
@@ -55,7 +85,7 @@ async def create_text_memory(body: TextMemoryCreate) -> MemoryOut:
             text_content=text,
         )
 
-    await queue.enqueue_ingest(str(row["id"]))
+    await enqueue_ingest_or_rollback(row["id"])
     return _row_to_memory(row)
 
 
@@ -85,10 +115,32 @@ async def upload_memory(
     suffix = Path(file.filename or "recording.webm").suffix or ".webm"
     filename = f"{uuid4()}{suffix}"
     dest = settings.audio_dir / filename
-    content = await file.read()
-    if not content:
+
+    # Stream to disk with a hard size cap (do not buffer arbitrary bodies in RAM).
+    written = 0
+    try:
+        with dest.open("wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_AUDIO_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Audio exceeds {MAX_AUDIO_BYTES} byte limit",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
+
+    if written == 0:
+        dest.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Empty audio file")
-    dest.write_bytes(content)
 
     async with agent_connection(agent_id) as conn:
         row = await queries.create_memory(
@@ -99,7 +151,7 @@ async def upload_memory(
             duration_ms=duration_ms,
         )
 
-    await queue.enqueue_ingest(str(row["id"]))
+    await enqueue_ingest_or_rollback(row["id"], audio_path=dest)
     return _row_to_memory(row)
 
 

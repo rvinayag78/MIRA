@@ -24,6 +24,8 @@ async def chat(body: ChatRequest) -> ChatResponse:
 
     agent_id = agent["id"]
 
+    # Keep DB connections short-lived: never hold a pool slot across Voyage /
+    # Anthropic / ElevenLabs round-trips (max_size=10 would otherwise stall).
     async with agent_connection(agent_id) as conn:
         ready = await queries.readiness(conn, agent_id)
         if not ready["ready_for_keeper"]:
@@ -35,7 +37,7 @@ async def chat(body: ChatRequest) -> ChatResponse:
                     f"(have {ready['text_indexed']} text, {ready['voice_indexed']} voice)."
                 ),
             )
-        session_id = body.session_id or await queries.create_session(conn, agent_id)
+        session_id = await queries.resolve_session(conn, agent_id, body.session_id)
         await queries.insert_message(
             conn,
             session_id=session_id,
@@ -44,30 +46,31 @@ async def chat(body: ChatRequest) -> ChatResponse:
             content=body.message,
         )
 
-        chunks = await hybrid_retrieve(conn, agent_id, body.message)
-        result = await generate.answer_question(body.message, chunks)
+    chunks = await hybrid_retrieve(agent_id, body.message)
+    result = await generate.answer_question(body.message, chunks)
 
-        if result.citations and not generate.check_citations_valid(result, chunks):
-            result = generate.GroundedAnswer(
-                answer=generate.REFUSAL,
-                citations=[],
-                confidence=0.0,
-                refused=True,
-                intent=result.intent,
+    if result.citations and not generate.check_citations_valid(result, chunks):
+        result = generate.GroundedAnswer(
+            answer=generate.REFUSAL,
+            citations=[],
+            confidence=0.0,
+            refused=True,
+            intent=result.intent,
+        )
+
+    audio_url = None
+    audio_uri = None
+    if body.speak and not result.refused and agent["elevenlabs_voice_id"]:
+        try:
+            path = await elevenlabs.text_to_speech(
+                agent["elevenlabs_voice_id"], result.answer
             )
+            audio_uri = str(path)
+            audio_url = f"/tts/{path.name}"
+        except elevenlabs.ElevenLabsError:
+            audio_url = None
 
-        audio_url = None
-        audio_uri = None
-        if body.speak and not result.refused and agent["elevenlabs_voice_id"]:
-            try:
-                path = await elevenlabs.text_to_speech(
-                    agent["elevenlabs_voice_id"], result.answer
-                )
-                audio_uri = str(path)
-                audio_url = f"/tts/{path.name}"
-            except elevenlabs.ElevenLabsError:
-                audio_url = None
-
+    async with agent_connection(agent_id) as conn:
         await queries.insert_message(
             conn,
             session_id=session_id,

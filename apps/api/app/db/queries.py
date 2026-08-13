@@ -158,6 +158,11 @@ async def update_memory_status(
     )
 
 
+async def delete_memory(conn: asyncpg.Connection, memory_id: UUID) -> None:
+    """Remove a memory row (and cascaded chunks). Used to roll back failed enqueue."""
+    await conn.execute("DELETE FROM memories WHERE id = $1", memory_id)
+
+
 async def delete_chunks_for_memory(conn: asyncpg.Connection, memory_id: UUID) -> None:
     await conn.execute("DELETE FROM chunks WHERE memory_id = $1", memory_id)
 
@@ -310,6 +315,32 @@ async def create_session(conn: asyncpg.Connection, agent_id: UUID) -> UUID:
     )
     assert row is not None
     return row["id"]
+
+
+async def get_owned_session(
+    conn: asyncpg.Connection, session_id: UUID, agent_id: UUID
+) -> UUID | None:
+    """Return session_id only if it belongs to agent_id; else None."""
+    row = await conn.fetchrow(
+        """
+        SELECT id FROM chat_sessions
+        WHERE id = $1 AND agent_id = $2
+        """,
+        session_id,
+        agent_id,
+    )
+    return row["id"] if row is not None else None
+
+
+async def resolve_session(
+    conn: asyncpg.Connection, agent_id: UUID, session_id: UUID | None
+) -> UUID:
+    """Use an owned session_id or create a new one. Never attach to another agent."""
+    if session_id is not None:
+        owned = await get_owned_session(conn, session_id, agent_id)
+        if owned is not None:
+            return owned
+    return await create_session(conn, agent_id)
 
 
 async def insert_message(
