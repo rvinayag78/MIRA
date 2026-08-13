@@ -130,7 +130,10 @@ async def run_live_gate() -> int:
         faith_scores: list[float] = []
         for q in data["questions"]:
             chunks = await hybrid_retrieve(
-                conn, agent_id, q["question"], rerank_enabled=settings.rerank_enabled
+                agent_id,
+                q["question"],
+                conn=conn,
+                rerank_enabled=settings.rerank_enabled,
             )
             retrieved = [str(c.id) for c in chunks]
             relevant = [fixture_to_real[x] for x in q["relevant_chunk_ids"] if x in fixture_to_real]

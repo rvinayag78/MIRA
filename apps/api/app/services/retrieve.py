@@ -8,6 +8,7 @@ import asyncpg
 
 from app.config import get_settings
 from app.db import queries
+from app.db.pool import agent_connection
 from app.services import voyage
 
 
@@ -46,18 +47,34 @@ def reciprocal_rank_fusion(
 
 
 async def hybrid_retrieve(
-    conn: asyncpg.Connection,
     agent_id: UUID,
     query: str,
     *,
+    conn: asyncpg.Connection | None = None,
     rerank_enabled: bool | None = None,
 ) -> list[RetrievedChunk]:
+    """
+    Hybrid dense+sparse retrieve.
+
+    External Voyage calls run without holding a DB connection. When ``conn`` is
+    omitted, a short-lived agent connection is acquired only for the SQL searches.
+    """
     settings = get_settings()
     use_rerank = settings.rerank_enabled if rerank_enabled is None else rerank_enabled
 
     query_emb = await voyage.embed_query(query)
-    dense_rows = await queries.dense_search(conn, agent_id, query_emb, settings.dense_top_k)
-    sparse_rows = await queries.sparse_search(conn, agent_id, query, settings.sparse_top_k)
+
+    if conn is not None:
+        dense_rows = await queries.dense_search(conn, agent_id, query_emb, settings.dense_top_k)
+        sparse_rows = await queries.sparse_search(conn, agent_id, query, settings.sparse_top_k)
+    else:
+        async with agent_connection(agent_id) as short_conn:
+            dense_rows = await queries.dense_search(
+                short_conn, agent_id, query_emb, settings.dense_top_k
+            )
+            sparse_rows = await queries.sparse_search(
+                short_conn, agent_id, query, settings.sparse_top_k
+            )
 
     dense_ids = [r["id"] for r in dense_rows]
     sparse_ids = [r["id"] for r in sparse_rows]
