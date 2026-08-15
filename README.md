@@ -28,9 +28,11 @@ docker compose up --build
 - Keeper: share link from maker UI (`/k/{agent_id}?token=...`)
 - API docs: http://localhost:8000/docs
 
-## Live demo (Railway)
+## Live demo (free)
 
-Do not deploy the GitHub repo as a single service — that build fails. Add `db`, `redis`, `api` (`apps/api`), and `web` (`apps/web`) as in [`infra/RAILWAY.md`](infra/RAILWAY.md).
+Railway’s multi-service plan is paid. Use **one** free Render service + Neon + Upstash:
+
+See [`infra/RENDER.md`](infra/RENDER.md).
 
 ### Local without Docker
 

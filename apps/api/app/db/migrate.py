@@ -33,7 +33,10 @@ def _statements(sql: str) -> list[str]:
 async def apply_schema() -> None:
     settings = get_settings()
     schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
-    conn = await asyncpg.connect(settings.asyncpg_dsn)
+    connect_kwargs: dict = {"dsn": settings.asyncpg_dsn}
+    if settings.asyncpg_ssl is not None:
+        connect_kwargs["ssl"] = settings.asyncpg_ssl
+    conn = await asyncpg.connect(**connect_kwargs)
     try:
         for stmt in _statements(schema):
             await conn.execute(stmt)

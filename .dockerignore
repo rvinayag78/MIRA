@@ -1,0 +1,14 @@
+.git
+.github
+**/.venv
+**/__pycache__
+**/node_modules
+**/.next
+**/*.egg-info
+data
+.env
+.env.*
+*.webm
+*.wav
+*.mp3
+apps/web/tsconfig.tsbuildinfo

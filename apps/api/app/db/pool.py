@@ -15,12 +15,15 @@ async def init_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
         settings = get_settings()
-        _pool = await asyncpg.create_pool(
-            dsn=settings.asyncpg_dsn,
-            min_size=1,
-            max_size=10,
-            command_timeout=60,
-        )
+        kwargs: dict = {
+            "dsn": settings.asyncpg_dsn,
+            "min_size": 1,
+            "max_size": 10,
+            "command_timeout": 60,
+        }
+        if settings.asyncpg_ssl is not None:
+            kwargs["ssl"] = settings.asyncpg_ssl
+        _pool = await asyncpg.create_pool(**kwargs)
     return _pool
 
 

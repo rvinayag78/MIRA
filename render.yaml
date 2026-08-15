@@ -1,0 +1,36 @@
+# Free-tier live demo: one web service (UI + API + worker).
+# Set DATABASE_URL (Neon, direct) and REDIS_URL (Upstash) in the Render dashboard.
+
+services:
+  - type: web
+    name: mira
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /
+    envVars:
+      - key: API_INTERNAL_URL
+        value: http://127.0.0.1:8000
+      - key: NEXT_PUBLIC_API_URL
+        value: /backend
+      - key: API_CORS_ORIGINS
+        value: "*"
+      - key: AUDIO_DIR
+        value: /tmp/mira-audio
+      - key: TTS_DIR
+        value: /tmp/mira-tts
+      - key: RERANK_ENABLED
+        value: "false"
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
+      - key: VOYAGE_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false

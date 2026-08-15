@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -50,13 +51,35 @@ class Settings(BaseSettings):
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.api_cors_origins.split(",") if o.strip()]
 
-    @property
-    def asyncpg_dsn(self) -> str:
-        """Railway/Render often emit postgres://; asyncpg wants postgresql://."""
+    def _asyncpg_parts(self) -> tuple[str, bool | None]:
+        """Normalize DSN for asyncpg (scheme, SSL, Neon query params)."""
         url = self.database_url
         if url.startswith("postgres://"):
-            return "postgresql://" + url[len("postgres://") :]
-        return url
+            url = "postgresql://" + url[len("postgres://") :]
+        parsed = urlparse(url)
+        ssl: bool | None = None
+        kept: list[tuple[str, str]] = []
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            lower = key.lower()
+            if lower in {"sslmode", "ssl", "channel_binding"}:
+                if lower == "sslmode" and value.lower() in {"require", "verify-full", "verify-ca"}:
+                    ssl = True
+                elif lower == "sslmode" and value.lower() == "disable":
+                    ssl = False
+                continue
+            kept.append((key, value))
+        dsn = urlunparse(parsed._replace(query=urlencode(kept)))
+        if ssl is None and "neon.tech" in dsn:
+            ssl = True
+        return dsn, ssl
+
+    @property
+    def asyncpg_dsn(self) -> str:
+        return self._asyncpg_parts()[0]
+
+    @property
+    def asyncpg_ssl(self) -> bool | None:
+        return self._asyncpg_parts()[1]
 
 
 @lru_cache

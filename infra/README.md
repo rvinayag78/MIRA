@@ -14,6 +14,8 @@ psql "$DATABASE_URL" -f apps/api/app/db/schema.sql
 cd apps/api && python -m app.db.migrate
 ```
 
-## Live demo on Railway
+## Live demo
 
-See [RAILWAY.md](./RAILWAY.md). Create four services; do not deploy the repo root as one service.
+Free path (Render + Neon + Upstash): [RENDER.md](./RENDER.md).
+
+Railway (paid multi-service): [RAILWAY.md](./RAILWAY.md).
