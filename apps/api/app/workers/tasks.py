@@ -108,16 +108,9 @@ async def ingest_memory(ctx: dict, memory_id: str) -> None:
                 meta=[(c.speaker, c.ts_start, c.ts_end) for c in chunks],
             )
 
-            # Auto-clone once we have enough voice samples
-            async with admin_connection() as conn:
-                voice_n = await queries.count_indexed_by_kind(conn, agent_id, "voice")
-                agent = await queries.get_agent(conn, agent_id)
-            if (
-                voice_n >= queries.REQUIRED_VOICE_MEMORIES
-                and agent
-                and not agent["elevenlabs_voice_id"]
-            ):
-                await clone_agent_voice(ctx, str(agent_id))
+            # Auto-clone after a successful index. Failures here must NOT mark the
+            # memory as error — chunks are already committed as indexed.
+            await _maybe_auto_clone_voice(ctx, agent_id, memory_id=mid)
 
         logger.info("Indexed memory %s", memory_id)
     except Exception as exc:  # noqa: BLE001
@@ -126,6 +119,30 @@ async def ingest_memory(ctx: dict, memory_id: str) -> None:
             await queries.update_memory_status(
                 conn, mid, "error", error_message=str(exc)[:1000]
             )
+
+
+async def _maybe_auto_clone_voice(ctx: dict, agent_id: UUID, *, memory_id: UUID) -> None:
+    """
+    Clone the agent voice once enough voice memories are indexed.
+
+    Isolated from ingest_memory's error handler so a clone/DB failure cannot
+    overwrite status=indexed on the memory that just finished embedding.
+    """
+    try:
+        async with admin_connection() as conn:
+            voice_n = await queries.count_indexed_by_kind(conn, agent_id, "voice")
+            agent = await queries.get_agent(conn, agent_id)
+        if (
+            voice_n >= queries.REQUIRED_VOICE_MEMORIES
+            and agent
+            and not agent["elevenlabs_voice_id"]
+        ):
+            await clone_agent_voice(ctx, str(agent_id))
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Auto-clone failed after indexing memory %s (memory left indexed)",
+            memory_id,
+        )
 
 
 async def clone_agent_voice(ctx: dict, agent_id: str) -> None:
