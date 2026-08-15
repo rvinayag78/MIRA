@@ -6,10 +6,20 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Repo root: apps/api/app/config.py → ../../..
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_ENV_CANDIDATES = (_REPO_ROOT / ".env", Path(".env"))
-_ENV_FILES = tuple(str(p) for p in _ENV_CANDIDATES if p.exists())
+def _env_files() -> tuple[str, ...]:
+    here = Path(__file__).resolve().parent
+    candidates = [here / ".env", Path(".env")]
+    for parent in here.parents:
+        candidates.append(parent / ".env")
+    seen: list[str] = []
+    for path in candidates:
+        resolved = str(path)
+        if path.is_file() and resolved not in seen:
+            seen.append(resolved)
+    return tuple(seen)
+
+
+_ENV_FILES = _env_files()
 
 
 class Settings(BaseSettings):
