@@ -16,4 +16,4 @@ cd apps/api && python -m app.db.migrate
 
 ## Live demo on Railway
 
-See [RAILWAY.md](./RAILWAY.md). The production compose file is [`docker-compose.railway.yml`](../docker-compose.railway.yml).
+See [RAILWAY.md](./RAILWAY.md). Create four services; do not deploy the repo root as one service.

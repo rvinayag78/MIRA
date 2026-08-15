@@ -1,42 +1,37 @@
 # Deploy MIRA on Railway
 
-One public URL. Visitors use Maker and Keeper in the browser; Next.js proxies `/backend` to FastAPI on the private network. API and the ARQ worker run in the same container so recordings stay on a shared volume.
+Railway does **not** build a monorepo from the GitHub root. **New project → Deploy from GitHub** on `MIRA` will fail (no `package.json` / `Dockerfile` at repo root). Create an empty project, then add four services.
+
+One public URL: the **web** service. Next.js proxies `/backend` to the API. API and the ARQ worker run in the same container so recordings stay on one volume.
 
 ## Services
 
-| Service | Image / build | Public? |
-|---------|----------------|---------|
-| `db` | `pgvector/pgvector:pg16` | no |
-| `redis` | `redis:7-alpine` | no |
-| `api` | `apps/api` (uvicorn + worker) | no |
-| `web` | `apps/web` production Next.js | **yes — share this** |
+| Service | Source | Root directory | Public? |
+|---------|--------|----------------|---------|
+| `db` | Docker image `pgvector/pgvector:pg16` | — | no |
+| `redis` | Docker image `redis:7-alpine` | — | no |
+| `api` | this GitHub repo | `apps/api` | no |
+| `web` | this GitHub repo | `apps/web` | **yes — share this** |
 
-## 1. Put the repo on GitHub
+Do **not** set a Dockerfile target. `apps/web/Dockerfile` is production-only. Railway does not support build targets.
 
-Railway builds from GitHub. Push `main` to `https://github.com/rvinayag78/MIRA.git`.
+## 1. Empty project + databases
 
-## 2. Create the project from Compose
-
-1. [Railway](https://railway.com) → **New project** → **Deploy from GitHub repo** → `MIRA`.
-2. If Railway asks for a Compose file, choose `docker-compose.railway.yml`.
-3. If it only detects `docker-compose.yml` (local dev), skip that import and add the four services below from the repo instead.
-
-### Manual services (if Compose import is not used)
-
-Create an empty Railway project, then:
-
-1. **db** — New service → Docker image `pgvector/pgvector:pg16`.  
+1. [Railway](https://railway.com) → **New project** → **Empty project**.
+2. **db** — Add service → Docker image → `pgvector/pgvector:pg16`.  
    Variables: `POSTGRES_USER=mira`, `POSTGRES_PASSWORD=<random>`, `POSTGRES_DB=mira`.  
-   Mount a volume at `/var/lib/postgresql/data`.
-2. **redis** — New service → Docker image `redis:7-alpine`.
-3. **api** — New service → GitHub repo, root directory `apps/api`.  
-   Custom start command: `/app/start.sh`.  
-   Mount a volume at `/data`.
-4. **web** — New service → GitHub repo, root directory `apps/web`.  
-   Dockerfile target `prod`.  
-   **Generate a public domain** on this service.
+   Volume at `/var/lib/postgresql/data`.
+3. **redis** — Add service → Docker image → `redis:7-alpine`.
 
-API variables:
+Use the pgvector image (not Railway’s default Postgres). Schema needs `CREATE EXTENSION vector`.
+
+## 2. API service
+
+Add service → GitHub repo `rvinayag78/MIRA`.
+
+- **Root directory:** `apps/api` (Settings → Build).
+- Volume at `/data`.
+- Variables:
 
 ```
 DATABASE_URL=postgresql://mira:${{db.POSTGRES_PASSWORD}}@${{db.RAILWAY_PRIVATE_DOMAIN}}:5432/mira
@@ -45,43 +40,47 @@ AUDIO_DIR=/data/audio
 TTS_DIR=/data/tts
 API_CORS_ORIGINS=*
 RERANK_ENABLED=false
-PORT=8000
 ASSEMBLYAI_API_KEY=
 VOYAGE_API_KEY=
 ANTHROPIC_API_KEY=
 ELEVENLABS_API_KEY=
 ```
 
-Web variables:
+`apps/api/railway.toml` starts `/app/start.sh` (migrate + worker + uvicorn). Set the four API keys in the Railway UI.
+
+## 3. Web service
+
+Add service → GitHub repo `rvinayag78/MIRA`.
+
+- **Root directory:** `apps/web`.
+- **Generate a public domain.**
+- Variables:
 
 ```
 API_INTERNAL_URL=http://${{api.RAILWAY_PRIVATE_DOMAIN}}:8000
 NEXT_PUBLIC_API_URL=/backend
-PORT=3000
 HOSTNAME=0.0.0.0
 ```
 
-Set the four API keys in the Railway UI (never commit them). After the first web deploy, confirm `NEXT_PUBLIC_API_URL=/backend` was present at **build** time — it is inlined into the browser bundle.
+`NEXT_PUBLIC_API_URL` is inlined at **build** time. Keep it `/backend`.
 
-## 3. Share the demo
+If the API private URL uses a different port, check the API service’s `PORT` (Railway may set one). Then either pin `PORT=8000` on the API service or point `API_INTERNAL_URL` at that port.
 
-Open the **web** service → **Settings** → **Networking** → **Generate domain**.
+## 4. Share the demo
 
-That URL is the live demo (`/maker` to record, then share `/k/{agent_id}?token=...`).
+Web service → Settings → Networking → **Generate domain**.
 
-## 4. Local check of the production images
+That URL is the demo (`/maker`, then share `/k/{agent_id}?token=...`).
+
+## Local production images
 
 ```bash
 cp .env.example .env   # fill keys
 docker compose -f docker-compose.railway.yml up --build
 ```
 
-Then visit http://localhost:3000.
+Visit http://localhost:3000.
 
 ## Cost / abuse
 
-Anyone with the URL can create agents and burn AssemblyAI, Voyage, Anthropic, and ElevenLabs credits. Use Railway spend limits and provider billing caps. This is a demo, not a multi-tenant product.
-
-## Render
-
-Same split works on Render (web + API Docker services, Postgres with `CREATE EXTENSION vector`, Redis, disk on `/data`). Railway is the path this repo is wired for.
+Anyone with the URL can create agents and burn provider credits. Use Railway spend limits and provider billing caps.

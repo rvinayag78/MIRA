@@ -30,9 +30,7 @@ docker compose up --build
 
 ## Live demo (Railway)
 
-Shareable public URL for the whole stack (web + API + worker + Postgres/pgvector + Redis):
-
-See [`infra/RAILWAY.md`](infra/RAILWAY.md). Production compose: [`docker-compose.railway.yml`](docker-compose.railway.yml).
+Do not deploy the GitHub repo as a single service — that build fails. Add `db`, `redis`, `api` (`apps/api`), and `web` (`apps/web`) as in [`infra/RAILWAY.md`](infra/RAILWAY.md).
 
 ### Local without Docker
 
