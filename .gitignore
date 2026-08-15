@@ -20,6 +20,7 @@ htmlcov/
 apps/api/.venv/
 apps/web/.next/
 apps/web/node_modules/
+apps/web/tsconfig.tsbuildinfo
 *.webm
 *.wav
 *.mp3

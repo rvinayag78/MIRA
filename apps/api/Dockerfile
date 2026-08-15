@@ -1,6 +1,8 @@
 FROM python:3.12-slim
 
 WORKDIR /app
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -8,9 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY pyproject.toml ./
 COPY app ./app
-COPY evals ./evals
+COPY start.sh ./start.sh
 
-RUN pip install --no-cache-dir -e ".[dev]"
+RUN pip install --no-cache-dir -e . \
+    && chmod +x start.sh
 
 EXPOSE 8000
 

@@ -28,6 +28,12 @@ docker compose up --build
 - Keeper: share link from maker UI (`/k/{agent_id}?token=...`)
 - API docs: http://localhost:8000/docs
 
+## Live demo (Railway)
+
+Shareable public URL for the whole stack (web + API + worker + Postgres/pgvector + Redis):
+
+See [`infra/RAILWAY.md`](infra/RAILWAY.md). Production compose: [`docker-compose.railway.yml`](docker-compose.railway.yml).
+
 ### Local without Docker
 
 ```bash

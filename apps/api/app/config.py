@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.api_cors_origins.split(",") if o.strip()]
 
+    @property
+    def asyncpg_dsn(self) -> str:
+        """Railway/Render often emit postgres://; asyncpg wants postgresql://."""
+        url = self.database_url
+        if url.startswith("postgres://"):
+            return "postgresql://" + url[len("postgres://") :]
+        return url
+
 
 @lru_cache
 def get_settings() -> Settings:

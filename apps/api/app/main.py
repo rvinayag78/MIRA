@@ -29,10 +29,12 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="MIRA Demo Agent API", version="0.1.0", lifespan=lifespan)
 settings = get_settings()
+_origins = settings.cors_origins
+_wildcard = _origins == ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
+    allow_origins=["*"] if _wildcard else _origins,
+    allow_credentials=not _wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
 )
