@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -11,8 +12,10 @@ from app.db.pool import admin_connection, agent_connection
 from app.schemas import ChatRequest, ChatResponse, CitationOut
 from app.services import elevenlabs, generate
 from app.services.retrieve import hybrid_retrieve
+from app.services.voyage import VoyageError
 
 router = APIRouter(tags=["chat"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -44,30 +47,39 @@ async def chat(body: ChatRequest) -> ChatResponse:
             content=body.message,
         )
 
-        chunks = await hybrid_retrieve(conn, agent_id, body.message)
+    try:
+        async with agent_connection(agent_id) as conn:
+            chunks = await hybrid_retrieve(conn, agent_id, body.message)
         result = await generate.answer_question(body.message, chunks)
+    except VoyageError as exc:
+        logger.exception("Retrieval failed")
+        raise HTTPException(status_code=502, detail=str(exc)[:800]) from exc
+    except Exception as exc:
+        logger.exception("Chat generation failed")
+        raise HTTPException(status_code=502, detail=str(exc)[:800]) from exc
 
-        if result.citations and not generate.check_citations_valid(result, chunks):
-            result = generate.GroundedAnswer(
-                answer=generate.REFUSAL,
-                citations=[],
-                confidence=0.0,
-                refused=True,
-                intent=result.intent,
+    if result.citations and not generate.check_citations_valid(result, chunks):
+        result = generate.GroundedAnswer(
+            answer=generate.REFUSAL,
+            citations=[],
+            confidence=0.0,
+            refused=True,
+            intent=result.intent,
+        )
+
+    audio_url = None
+    audio_uri = None
+    if body.speak and not result.refused and agent["elevenlabs_voice_id"]:
+        try:
+            path = await elevenlabs.text_to_speech(
+                agent["elevenlabs_voice_id"], result.answer
             )
+            audio_uri = str(path)
+            audio_url = f"/tts/{path.name}"
+        except elevenlabs.ElevenLabsError:
+            audio_url = None
 
-        audio_url = None
-        audio_uri = None
-        if body.speak and not result.refused and agent["elevenlabs_voice_id"]:
-            try:
-                path = await elevenlabs.text_to_speech(
-                    agent["elevenlabs_voice_id"], result.answer
-                )
-                audio_uri = str(path)
-                audio_url = f"/tts/{path.name}"
-            except elevenlabs.ElevenLabsError:
-                audio_url = None
-
+    async with agent_connection(agent_id) as conn:
         await queries.insert_message(
             conn,
             session_id=session_id,

@@ -33,26 +33,30 @@ async function proxy(
   req: NextRequest,
   ctx: { params: Promise<{ path: string[] }> },
 ): Promise<Response> {
-  const { path } = await ctx.params;
-  const target = `${API_INTERNAL_URL}/${path.join("/")}${req.nextUrl.search}`;
-  const headers = filteredHeaders(req.headers);
-  const init: RequestInit & { duplex?: "half" } = {
-    method: req.method,
-    headers,
-    redirect: "manual",
-  };
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = req.body;
-    init.duplex = "half";
-  }
+  try {
+    const { path } = await ctx.params;
+    const target = `${API_INTERNAL_URL}/${path.join("/")}${req.nextUrl.search}`;
+    const headers = filteredHeaders(req.headers);
+    const init: RequestInit = {
+      method: req.method,
+      headers,
+      redirect: "manual",
+    };
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      init.body = await req.arrayBuffer();
+    }
 
-  const upstream = await fetch(target, init);
-  const responseHeaders = filteredHeaders(upstream.headers);
-  return new Response(upstream.body, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers: responseHeaders,
-  });
+    const upstream = await fetch(target, init);
+    const responseHeaders = filteredHeaders(upstream.headers);
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: responseHeaders,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "API proxy failed";
+    return Response.json({ detail }, { status: 502 });
+  }
 }
 
 export const runtime = "nodejs";

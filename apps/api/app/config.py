@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     voyage_embed_dim: int = 1024
     voyage_rerank_model: str = "rerank-2.5"
     anthropic_route_model: str = "claude-haiku-4-5-20251001"
-    anthropic_ground_model: str = "claude-sonnet-5-20250514"
+    anthropic_ground_model: str = "claude-sonnet-4-5-20250929"
 
     # Retrieval
     dense_top_k: int = 20
