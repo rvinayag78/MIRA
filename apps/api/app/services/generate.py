@@ -50,16 +50,22 @@ def _client() -> anthropic.AsyncAnthropic:
     return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
 
-async def route_intent(question: str) -> RouteIntent:
+async def route_intent(question: str, *, maker_name: str = "the maker") -> RouteIntent:
     settings = get_settings()
     client = _client()
     prompt = (
-        "Classify the user message for a memory-grounded agent.\n"
+        "You classify questions from a KEEPER about someone else's recorded memories.\n"
+        f"The memories belong to {maker_name} (the maker), not to the person asking.\n"
+        "The keeper will often use they/he/she/them or the maker's name. That is expected.\n"
         "Return ONLY one label:\n"
-        "- answerable_from_memories: question about personal facts/stories that might be in recorded memories\n"
-        "- clarify: too vague to retrieve\n"
-        "- refuse_out_of_scope: asks for world knowledge, advice, or things not about the maker's memories\n"
-        "- smalltalk: greetings / thanks\n\n"
+        "- answerable_from_memories: anything about the maker's life, stories, people, places, "
+        "feelings, or what they said — including third-person phrasing "
+        "(\"What did they say about their childhood?\", \"Where did she grow up?\")\n"
+        "- clarify: too vague to retrieve (e.g. \"tell me stuff\")\n"
+        "- refuse_out_of_scope: world knowledge, news, advice, or topics clearly not about "
+        "this maker's recorded life\n"
+        "- smalltalk: greetings / thanks\n"
+        "Never refuse just because the question is about \"someone else\" or uses third person.\n\n"
         f"User: {question}"
     )
     msg = await client.messages.create(
@@ -82,7 +88,12 @@ async def route_intent(question: str) -> RouteIntent:
 REFUSAL = "I don’t have that in the recorded memories."
 
 
-async def ground_answer(question: str, chunks: list[RetrievedChunk]) -> GroundedAnswer:
+async def ground_answer(
+    question: str,
+    chunks: list[RetrievedChunk],
+    *,
+    maker_name: str = "the maker",
+) -> GroundedAnswer:
     settings = get_settings()
     if not chunks:
         return GroundedAnswer(
@@ -101,14 +112,22 @@ async def ground_answer(question: str, chunks: list[RetrievedChunk]) -> Grounded
         }
         for c in chunks
     ]
+    who = maker_name.strip() or "the maker"
     system = (
-        "You are a keeper-facing memory agent. Answer ONLY from the provided evidence chunks.\n"
+        f"You help a keeper learn about {who} from {who}'s recorded memories.\n"
+        "The user is NOT the maker. They are asking ABOUT someone else.\n"
+        "Evidence chunks are the maker's own words, often first person (I, me, my).\n"
+        "When the user says they/he/she/them, \"this person\", or the maker's name, they mean the maker.\n"
+        "Answer in third person about the maker. Translate first-person evidence "
+        '("I grew up in a blue house") into third person '
+        f'("{who} grew up in a blue house").\n'
         "Rules:\n"
         "1. Every factual claim must be supported by a cited chunk.\n"
         "2. If evidence is insufficient, refuse with exactly: "
         f'"{REFUSAL}"\n'
         "3. Do not use biography, world knowledge, or invent details.\n"
-        "4. Return strict JSON: "
+        "4. Do not refuse because the question is third-person or about \"someone else\".\n"
+        "5. Return strict JSON: "
         '{"answer": string, "citations": [{"chunk_id": string, "quote": string}], "confidence": number}\n'
         "confidence is 0-1."
     )
@@ -171,12 +190,14 @@ def _parse_json(raw: str) -> dict[str, Any]:
 async def answer_question(
     question: str,
     chunks: list[RetrievedChunk],
+    *,
+    maker_name: str = "the maker",
 ) -> GroundedAnswer:
-    intent = await route_intent(question)
+    intent = await route_intent(question, maker_name=maker_name)
 
     if intent == "smalltalk":
         return GroundedAnswer(
-            answer="Hi — ask me about the memories that were recorded.",
+            answer=f"Hi — ask me about {maker_name}'s recorded memories.",
             citations=[],
             confidence=1.0,
             refused=False,
@@ -184,7 +205,10 @@ async def answer_question(
         )
     if intent == "clarify":
         return GroundedAnswer(
-            answer="Could you ask a more specific question about a person, place, or event from the memories?",
+            answer=(
+                f"Could you ask a more specific question about a person, place, "
+                f"or event from {maker_name}'s memories?"
+            ),
             citations=[],
             confidence=1.0,
             refused=False,
@@ -199,7 +223,7 @@ async def answer_question(
             intent=intent,
         )
 
-    return await ground_answer(question, chunks)
+    return await ground_answer(question, chunks, maker_name=maker_name)
 
 
 def check_citations_valid(answer: GroundedAnswer, chunks: list[RetrievedChunk]) -> bool:

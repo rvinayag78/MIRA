@@ -145,7 +145,8 @@ export default function KeeperPage() {
           {name}
         </h1>
         <p style={{ color: "var(--muted)", margin: 0 }}>
-          Ask about recorded memories. If it wasn&apos;t said, you&apos;ll hear that.
+          You are asking about someone else&apos;s memories. If they didn&apos;t record it, you&apos;ll
+          hear that.
         </p>
       </header>
 
@@ -258,7 +259,7 @@ export default function KeeperPage() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask a question…"
+            placeholder="Ask about them…"
             disabled={busy || !token || locked}
             style={{
               flex: 1,

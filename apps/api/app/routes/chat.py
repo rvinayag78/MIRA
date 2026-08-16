@@ -50,7 +50,11 @@ async def chat(body: ChatRequest) -> ChatResponse:
     try:
         async with agent_connection(agent_id) as conn:
             chunks = await hybrid_retrieve(conn, agent_id, body.message)
-        result = await generate.answer_question(body.message, chunks)
+        result = await generate.answer_question(
+            body.message,
+            chunks,
+            maker_name=agent["display_name"] or "the maker",
+        )
     except VoyageError as exc:
         logger.exception("Retrieval failed")
         raise HTTPException(status_code=502, detail=str(exc)[:800]) from exc
