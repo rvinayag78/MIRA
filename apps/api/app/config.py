@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     elevenlabs_api_key: str = ""
 
-    voyage_embed_model: str = "voyage-context-4"
+    voyage_embed_model: str = "voyage-4"
     voyage_embed_dim: int = 1024
     voyage_rerank_model: str = "rerank-2.5"
     anthropic_route_model: str = "claude-haiku-4-5-20251001"

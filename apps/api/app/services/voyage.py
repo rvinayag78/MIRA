@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
@@ -7,6 +8,10 @@ import httpx
 from app.config import get_settings
 
 VOYAGE_BASE = "https://api.voyageai.com/v1"
+# voyage-context-* is rejected by POST /embeddings; use this sibling model instead.
+_STANDARD_EMBED_MODEL = "voyage-4"
+
+logger = logging.getLogger(__name__)
 
 
 class VoyageError(RuntimeError):
@@ -15,6 +20,12 @@ class VoyageError(RuntimeError):
 
 def _is_context_model(model: str) -> bool:
     return "context" in model.lower()
+
+
+def _standard_embed_model(model: str) -> str:
+    if _is_context_model(model):
+        return _STANDARD_EMBED_MODEL
+    return model
 
 
 def _headers() -> dict[str, str]:
@@ -32,6 +43,25 @@ def _standard_embeddings(data: dict[str, Any]) -> list[list[float]]:
     return [item["embedding"] for item in items]
 
 
+async def _post_embeddings(texts: list[str], *, input_type: str) -> list[list[float]]:
+    settings = get_settings()
+    model = _standard_embed_model(settings.voyage_embed_model)
+    payload = {
+        "model": model,
+        "input": texts,
+        "input_type": input_type,
+        "output_dimension": settings.voyage_embed_dim,
+    }
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(f"{VOYAGE_BASE}/embeddings", headers=_headers(), json=payload)
+    if resp.status_code >= 400:
+        raise VoyageError(f"Voyage embed error {resp.status_code}: {resp.text}")
+    items = _standard_embeddings(resp.json())
+    if len(items) != len(texts):
+        raise VoyageError(f"Voyage embed returned {len(items)} vectors for {len(texts)} texts")
+    return items
+
+
 async def _contextualized_embeddings(
     texts: list[str],
     *,
@@ -40,8 +70,6 @@ async def _contextualized_embeddings(
 ) -> list[list[float]]:
     """voyage-context-* only works on /contextualizedembeddings, not /embeddings."""
     settings = get_settings()
-    # Documents: one inner list = one document's chunks.
-    # Queries: flat list of query strings (Voyage also accepts [[q]]).
     inputs: list[Any] = [list(texts)] if grouped else list(texts)
     payload: dict[str, Any] = {
         "model": settings.voyage_embed_model,
@@ -64,65 +92,45 @@ async def _contextualized_embeddings(
 
 
 async def embed_documents(texts: list[str], *, document_context: str | None = None) -> list[list[float]]:
-    """
-    Embed chunks at VOYAGE_EMBED_DIM.
-    voyage-context-* uses the contextualized endpoint (required).
-    Other models use the standard embeddings API.
-    """
+    """Embed chunks. Context models try /contextualizedembeddings, then voyage-4."""
     if not texts:
         return []
     settings = get_settings()
-    _ = document_context  # chunks in `texts` already form the document
+    _ = document_context
 
     if _is_context_model(settings.voyage_embed_model):
-        parsed = await _contextualized_embeddings(
-            texts,
-            input_type="document",
-            grouped=True,
-        )
-        if len(parsed) != len(texts):
+        try:
+            parsed = await _contextualized_embeddings(
+                texts,
+                input_type="document",
+                grouped=True,
+            )
+            if len(parsed) == len(texts):
+                return parsed
             raise VoyageError(
                 f"Voyage contextualized embed returned {len(parsed)} vectors for {len(texts)} chunks"
             )
-        return parsed
+        except (VoyageError, httpx.HTTPError) as exc:
+            logger.warning("Contextualized document embed failed; using %s: %s", _STANDARD_EMBED_MODEL, exc)
 
-    payload = {
-        "model": settings.voyage_embed_model,
-        "input": texts,
-        "input_type": "document",
-        "output_dimension": settings.voyage_embed_dim,
-    }
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(f"{VOYAGE_BASE}/embeddings", headers=_headers(), json=payload)
-        if resp.status_code >= 400:
-            raise VoyageError(f"Voyage embed error {resp.status_code}: {resp.text}")
-        return _standard_embeddings(resp.json())
+    return await _post_embeddings(texts, input_type="document")
 
 
 async def embed_query(query: str) -> list[float]:
     settings = get_settings()
     if _is_context_model(settings.voyage_embed_model):
-        parsed = await _contextualized_embeddings(
-            [query],
-            input_type="query",
-            grouped=False,
-        )
-        return parsed[0]
+        try:
+            parsed = await _contextualized_embeddings(
+                [query],
+                input_type="query",
+                grouped=False,
+            )
+            if parsed:
+                return parsed[0]
+        except (VoyageError, httpx.HTTPError) as exc:
+            logger.warning("Contextualized query embed failed; using %s: %s", _STANDARD_EMBED_MODEL, exc)
 
-    payload = {
-        "model": settings.voyage_embed_model,
-        "input": [query],
-        "input_type": "query",
-        "output_dimension": settings.voyage_embed_dim,
-    }
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(f"{VOYAGE_BASE}/embeddings", headers=_headers(), json=payload)
-        if resp.status_code >= 400:
-            raise VoyageError(f"Voyage query embed error {resp.status_code}: {resp.text}")
-        items = _standard_embeddings(resp.json())
-        if not items:
-            raise VoyageError("Voyage query embed returned no data")
-        return items[0]
+    return (await _post_embeddings([query], input_type="query"))[0]
 
 
 def _parse_contextualized(data: dict[str, Any]) -> list[list[float]]:

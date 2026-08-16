@@ -7,7 +7,7 @@ Maker records memories → AssemblyAI transcription → Voyage embeddings in Pos
 | Layer | Choice |
 |-------|--------|
 | Transcription | AssemblyAI (batch, diarized) |
-| Embeddings | voyage-context-4 @ 1024d |
+| Embeddings | voyage-4 @ 1024d |
 | Storage | Postgres 16 + pgvector + RLS |
 | Retrieval | Hybrid pgvector + FTS, RRF |
 | Rerank | Voyage rerank-2.5 (eval-gated, off by default) |
