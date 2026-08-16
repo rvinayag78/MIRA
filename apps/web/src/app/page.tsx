@@ -55,7 +55,7 @@ export default function HomePage() {
           MIRA
         </p>
         <p style={{ color: "var(--muted)", margin: "1.25rem 0 2rem", lineHeight: 1.6 }}>
-          Add memories as the maker. Ask about them as the keeper.
+          Add memories as the maker. Talk with them as the keeper.
         </p>
         <div style={{ display: "flex", gap: "0.85rem", justifyContent: "center", flexWrap: "wrap" }}>
           <Link href="/maker" style={btn}>

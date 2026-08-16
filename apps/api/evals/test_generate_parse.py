@@ -1,6 +1,14 @@
-from app.services.generate import REFUSAL, _parse_json, check_citations_valid
-from app.services.retrieve import RetrievedChunk
 from uuid import UUID
+
+from app.services.generate import (
+    REFUSAL,
+    Citation,
+    GroundedAnswer,
+    _parse_json,
+    check_citations_valid,
+    expand_retrieval_query,
+)
+from app.services.retrieve import RetrievedChunk
 
 
 def test_parse_json_fenced():
@@ -22,18 +30,32 @@ def test_citation_validation():
             score=1.0,
         )
     ]
-    from app.services.generate import Citation, GroundedAnswer
-
     ok = GroundedAnswer(
         answer="It was blue",
         citations=[Citation(chunk_id=str(cid), quote="blue bungalow")],
     )
-    bad = GroundedAnswer(
+    punctuated = GroundedAnswer(
+        answer="It was a blue bungalow.",
+        citations=[Citation(chunk_id=str(cid), quote="blue bungalow,")],
+    )
+    bad_id = GroundedAnswer(
         answer="Nope",
         citations=[Citation(chunk_id="00000000-0000-0000-0000-000000000000", quote="x")],
     )
+    invented = GroundedAnswer(
+        answer="It was a red victorian",
+        citations=[Citation(chunk_id=str(cid), quote="red victorian mansion")],
+    )
     assert check_citations_valid(ok, chunks)
-    assert not check_citations_valid(bad, chunks)
+    assert check_citations_valid(punctuated, chunks)
+    assert not check_citations_valid(bad_id, chunks)
+    assert not check_citations_valid(invented, chunks)
+
+
+def test_expand_retrieval_query_follow_up():
+    history = [{"role": "user", "content": "What was your childhood home like?"}]
+    assert "childhood home" in expand_retrieval_query("tell me more", history)
+    assert expand_retrieval_query("Where did you work?", history) == "Where did you work?"
 
 
 def test_refusal_constant():

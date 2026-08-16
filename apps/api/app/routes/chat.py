@@ -46,14 +46,20 @@ async def chat(body: ChatRequest) -> ChatResponse:
             role="user",
             content=body.message,
         )
+        rows = await queries.list_session_messages(conn, session_id, limit=9)
+        history = [{"role": r["role"], "content": r["content"]} for r in rows]
+        if history and history[-1]["role"] == "user":
+            history = history[:-1]
 
     try:
+        retrieve_q = generate.expand_retrieval_query(body.message, history)
         async with agent_connection(agent_id) as conn:
-            chunks = await hybrid_retrieve(conn, agent_id, body.message)
+            chunks = await hybrid_retrieve(conn, agent_id, retrieve_q)
         result = await generate.answer_question(
             body.message,
             chunks,
             maker_name=agent["display_name"] or "the maker",
+            history=history,
         )
     except VoyageError as exc:
         logger.exception("Retrieval failed")

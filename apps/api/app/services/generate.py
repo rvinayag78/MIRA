@@ -50,22 +50,65 @@ def _client() -> anthropic.AsyncAnthropic:
     return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
 
-async def route_intent(question: str, *, maker_name: str = "the maker") -> RouteIntent:
+_FOLLOW_UP = re.compile(
+    r"^(and |what about |tell me more|more about |why\b|how so|go on|continue|"
+    r"that\b|those\b|it\b|them\b|and then)",
+    re.I,
+)
+
+
+def expand_retrieval_query(
+    question: str, history: list[dict[str, str]] | None = None
+) -> str:
+    """Fold a short follow-up into the prior user turn so retrieval stays on-topic."""
+    prior_user = None
+    if history:
+        for turn in reversed(history):
+            if turn.get("role") == "user" and (turn.get("content") or "").strip():
+                prior_user = turn["content"].strip()
+                break
+    q = question.strip()
+    if prior_user and (len(q.split()) <= 3 or _FOLLOW_UP.search(q)):
+        return f"{prior_user} {q}"
+    return q
+
+
+def _history_block(history: list[dict[str, str]] | None) -> str:
+    if not history:
+        return ""
+    lines = []
+    for turn in history[-6:]:
+        role = turn.get("role") or "user"
+        content = (turn.get("content") or "").strip()
+        if content:
+            lines.append(f"{role}: {content}")
+    if not lines:
+        return ""
+    return "Recent conversation:\n" + "\n".join(lines) + "\n\n"
+
+
+async def route_intent(
+    question: str,
+    *,
+    maker_name: str = "the maker",
+    history: list[dict[str, str]] | None = None,
+) -> RouteIntent:
     settings = get_settings()
     client = _client()
     prompt = (
-        "You classify questions from a KEEPER about someone else's recorded memories.\n"
-        f"The memories belong to {maker_name} (the maker), not to the person asking.\n"
-        "The keeper will often use they/he/she/them or the maker's name. That is expected.\n"
+        _history_block(history)
+        + f"A keeper is talking to a memory of {maker_name}. The agent will answer AS {maker_name}.\n"
+        "The keeper may say \"you\" (addressing the maker) or they/he/she (about the maker). Both are in-scope.\n"
+        "Follow-ups like \"tell me more\" after a memory question are answerable_from_memories.\n"
         "Return ONLY one label:\n"
         "- answerable_from_memories: anything about the maker's life, stories, people, places, "
-        "feelings, or what they said — including third-person phrasing "
-        "(\"What did they say about their childhood?\", \"Where did she grow up?\")\n"
-        "- clarify: too vague to retrieve (e.g. \"tell me stuff\")\n"
+        "feelings, or what they recorded — e.g. \"What was your childhood home like?\", "
+        "\"What did they say about their mom?\"\n"
+        "- clarify: too vague to retrieve (e.g. \"tell me stuff\") with no prior thread\n"
         "- refuse_out_of_scope: world knowledge, news, advice, or topics clearly not about "
-        "this maker's recorded life\n"
+        "this person's recorded life\n"
         "- smalltalk: greetings / thanks\n"
-        "Never refuse just because the question is about \"someone else\" or uses third person.\n\n"
+        "Never refuse just because the question uses you/they/he/she.\n\n"
         f"User: {question}"
     )
     msg = await client.messages.create(
@@ -93,6 +136,7 @@ async def ground_answer(
     chunks: list[RetrievedChunk],
     *,
     maker_name: str = "the maker",
+    history: list[dict[str, str]] | None = None,
 ) -> GroundedAnswer:
     settings = get_settings()
     if not chunks:
@@ -114,29 +158,41 @@ async def ground_answer(
     ]
     who = maker_name.strip() or "the maker"
     system = (
-        f"You help a keeper learn about {who} from {who}'s recorded memories.\n"
-        "The user is NOT the maker. They are asking ABOUT someone else.\n"
-        "Evidence chunks are the maker's own words, often first person (I, me, my).\n"
-        "When the user says they/he/she/them, \"this person\", or the maker's name, they mean the maker.\n"
-        "Answer in third person about the maker. Translate first-person evidence "
-        '("I grew up in a blue house") into third person '
-        f'("{who} grew up in a blue house").\n'
-        "Rules:\n"
-        "1. Every factual claim must be supported by a cited chunk.\n"
-        "2. If evidence is insufficient, refuse with exactly: "
+        f"You are {who}. A keeper is speaking with you through your recorded memories.\n"
+        "Speak in first person (I, me, my) the way you actually talk in the evidence: "
+        "your wording, pacing, warmth or bluntness, the details you linger on. "
+        "Sound like a person remembering out loud, not a biography or a list.\n"
+        "You may weave several evidence chunks into one conversational reply and lightly "
+        "paraphrase, but every fact must come from the evidence chunks.\n"
+        "The keeper may say \"you\" or they/he/she — they mean you. "
+        "Recent conversation is only for understanding follow-ups; it is not evidence. "
+        "If an earlier reply said something that is not in this evidence, ignore it.\n"
+        "Hard limits — no hallucinations:\n"
+        "- Do not invent names, places, dates, feelings, jobs, or events missing from the evidence.\n"
+        "- Do not fill gaps with what someone like you \"would\" have done or felt.\n"
+        "- Do not complete a story the evidence does not finish.\n"
+        "- If you only have a partial answer, say only what you recorded and stop.\n"
+        "- If the evidence does not answer the question, refuse with exactly: "
         f'"{REFUSAL}"\n'
-        "3. Do not use biography, world knowledge, or invent details.\n"
-        "4. Do not refuse because the question is third-person or about \"someone else\".\n"
-        "5. Return strict JSON: "
+        "Citations: for each factual claim, include chunk_id and a short quote copied verbatim "
+        "from that chunk (a substring of the chunk text). Do not paraphrase the quote.\n"
+        "Return strict JSON: "
         '{"answer": string, "citations": [{"chunk_id": string, "quote": string}], "confidence": number}\n'
         "confidence is 0-1."
     )
-    user = json.dumps({"question": question, "evidence": evidence}, ensure_ascii=False)
+    user = json.dumps(
+        {
+            "question": question,
+            "recent_conversation": (history or [])[-6:],
+            "evidence": evidence,
+        },
+        ensure_ascii=False,
+    )
 
     client = _client()
     msg = await client.messages.create(
         model=settings.anthropic_ground_model,
-        max_tokens=1024,
+        max_tokens=1536,
         system=system,
         messages=[{"role": "user", "content": user}],
     )
@@ -159,6 +215,7 @@ async def ground_answer(
         confidence = float(parsed.get("confidence") or 0.0)
     except (TypeError, ValueError):
         confidence = 0.0
+    citations = citations_grounded_in_chunks(citations, chunks)
     refused = REFUSAL.lower() in answer.lower() or not citations
 
     # Post-check: drop citations not in retrieved set (already filtered)
@@ -192,12 +249,13 @@ async def answer_question(
     chunks: list[RetrievedChunk],
     *,
     maker_name: str = "the maker",
+    history: list[dict[str, str]] | None = None,
 ) -> GroundedAnswer:
-    intent = await route_intent(question, maker_name=maker_name)
+    intent = await route_intent(question, maker_name=maker_name, history=history)
 
     if intent == "smalltalk":
         return GroundedAnswer(
-            answer=f"Hi — ask me about {maker_name}'s recorded memories.",
+            answer="Hi — ask me about what I recorded.",
             citations=[],
             confidence=1.0,
             refused=False,
@@ -206,8 +264,8 @@ async def answer_question(
     if intent == "clarify":
         return GroundedAnswer(
             answer=(
-                f"Could you ask a more specific question about a person, place, "
-                f"or event from {maker_name}'s memories?"
+                "Could you ask me something more specific — a person, place, "
+                "or time I talked about?"
             ),
             citations=[],
             confidence=1.0,
@@ -223,12 +281,42 @@ async def answer_question(
             intent=intent,
         )
 
-    return await ground_answer(question, chunks, maker_name=maker_name)
+    return await ground_answer(question, chunks, maker_name=maker_name, history=history)
+
+
+def _norm_text(value: str) -> str:
+    chars: list[str] = []
+    for ch in value.lower():
+        if ch.isalnum() or ch.isspace():
+            chars.append(ch)
+        elif ch in "'’":
+            continue
+        else:
+            chars.append(" ")
+    return " ".join("".join(chars).split())
+
+
+def citations_grounded_in_chunks(
+    citations: list[Citation], chunks: list[RetrievedChunk]
+) -> list[Citation]:
+    """Keep citations whose quote is a verbatim substring of the cited chunk."""
+    by_id = {str(c.id): c.text for c in chunks}
+    kept: list[Citation] = []
+    for cite in citations:
+        source = by_id.get(cite.chunk_id)
+        quote = (cite.quote or "").strip()
+        if not source or len(quote) < 8:
+            continue
+        if _norm_text(quote) in _norm_text(source):
+            kept.append(cite)
+    return kept
 
 
 def check_citations_valid(answer: GroundedAnswer, chunks: list[RetrievedChunk]) -> bool:
     allowed = {str(c.id) for c in chunks}
-    return all(c.chunk_id in allowed for c in answer.citations)
+    if not all(c.chunk_id in allowed for c in answer.citations):
+        return False
+    return len(citations_grounded_in_chunks(answer.citations, chunks)) == len(answer.citations)
 
 
 async def faithfulness_score(answer: str, evidence_texts: list[str]) -> float:

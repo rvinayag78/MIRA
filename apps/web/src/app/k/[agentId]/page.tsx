@@ -145,8 +145,7 @@ export default function KeeperPage() {
           {name}
         </h1>
         <p style={{ color: "var(--muted)", margin: 0 }}>
-          You are asking about someone else&apos;s memories. If they didn&apos;t record it, you&apos;ll
-          hear that.
+          They&apos;ll answer in their own voice, only from what they recorded.
         </p>
       </header>
 
@@ -168,7 +167,7 @@ export default function KeeperPage() {
         )}
         {!locked && turns.length === 0 && (
           <p className="rise" style={{ color: "var(--muted)" }}>
-            Try: “What did they say about their childhood home?”
+            Try: “What was your childhood home like?”
           </p>
         )}
         {turns.map((t, i) => (
@@ -259,7 +258,7 @@ export default function KeeperPage() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about them…"
+            placeholder="Talk with them…"
             disabled={busy || !token || locked}
             style={{
               flex: 1,

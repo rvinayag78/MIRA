@@ -342,6 +342,23 @@ async def insert_message(
     return row["id"]
 
 
+async def list_session_messages(
+    conn: asyncpg.Connection, session_id: UUID, *, limit: int = 8
+) -> list[asyncpg.Record]:
+    rows = await conn.fetch(
+        """
+        SELECT role, content
+        FROM messages
+        WHERE session_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        """,
+        session_id,
+        limit,
+    )
+    return list(reversed(rows))
+
+
 async def load_all_chunks_for_agent(conn: asyncpg.Connection, agent_id: UUID) -> list[asyncpg.Record]:
     return await conn.fetch(
         """
