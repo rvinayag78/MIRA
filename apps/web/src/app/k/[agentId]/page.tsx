@@ -192,31 +192,6 @@ export default function KeeperPage() {
             >
               {t.content}
             </p>
-            {t.citations && t.citations.length > 0 && (
-              <ul
-                style={{
-                  margin: "0.65rem 0 0",
-                  padding: 0,
-                  listStyle: "none",
-                  display: "grid",
-                  gap: "0.35rem",
-                }}
-              >
-                {t.citations.map((c) => (
-                  <li
-                    key={`${c.chunk_id}-${c.quote.slice(0, 12)}`}
-                    style={{
-                      fontSize: "0.82rem",
-                      color: "var(--muted)",
-                      borderLeft: "2px solid var(--accent-dim)",
-                      paddingLeft: "0.65rem",
-                    }}
-                  >
-                    “{c.quote}”
-                  </li>
-                ))}
-              </ul>
-            )}
           </article>
         ))}
         <div ref={bottomRef} />
