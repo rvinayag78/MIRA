@@ -218,7 +218,10 @@ async def count_indexed_by_kind(conn: asyncpg.Connection, agent_id: UUID, kind: 
 async def count_by_kind(conn: asyncpg.Connection, agent_id: UUID, kind: str) -> int:
     return int(
         await conn.fetchval(
-            "SELECT COUNT(*) FROM memories WHERE agent_id = $1 AND kind = $2",
+            """
+            SELECT COUNT(*) FROM memories
+            WHERE agent_id = $1 AND kind = $2 AND status <> 'error'
+            """,
             agent_id,
             kind,
         )

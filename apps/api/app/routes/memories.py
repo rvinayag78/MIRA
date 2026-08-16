@@ -71,14 +71,6 @@ async def upload_memory(
     if agent is None:
         raise HTTPException(status_code=403, detail="Invalid agent token")
 
-    async with agent_connection(agent_id) as conn:
-        total = await queries.count_by_kind(conn, agent_id, "voice")
-        if total >= queries.REQUIRED_VOICE_MEMORIES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Already have {queries.REQUIRED_VOICE_MEMORIES} voice memories",
-            )
-
     settings = get_settings()
     settings.audio_dir.mkdir(parents=True, exist_ok=True)
 
@@ -90,14 +82,24 @@ async def upload_memory(
         raise HTTPException(status_code=400, detail="Empty audio file")
     dest.write_bytes(content)
 
-    async with agent_connection(agent_id) as conn:
-        row = await queries.create_memory(
-            conn,
-            agent_id,
-            kind="voice",
-            audio_uri=str(dest),
-            duration_ms=duration_ms,
-        )
+    try:
+        async with agent_connection(agent_id) as conn:
+            total = await queries.count_by_kind(conn, agent_id, "voice")
+            if total >= queries.REQUIRED_VOICE_MEMORIES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Already have {queries.REQUIRED_VOICE_MEMORIES} voice memories",
+                )
+            row = await queries.create_memory(
+                conn,
+                agent_id,
+                kind="voice",
+                audio_uri=str(dest),
+                duration_ms=duration_ms,
+            )
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
 
     await queue.enqueue_ingest(str(row["id"]))
     return _row_to_memory(row)

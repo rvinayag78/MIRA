@@ -7,13 +7,23 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 def _env_files() -> tuple[str, ...]:
+    """Load .env files from repo root toward cwd; later files override.
+
+    Stop at the git/repo root so a home-directory or `/`.env cannot override
+    project settings (pydantic-settings applies later files at higher priority).
+    """
     here = Path(__file__).resolve().parent
-    candidates = [here / ".env", Path(".env")]
+    ancestors: list[Path] = []
     for parent in here.parents:
-        candidates.append(parent / ".env")
+        ancestors.append(parent)
+        if (parent / ".git").exists() or (parent / "docker-compose.yml").is_file():
+            break
+    candidates = [parent / ".env" for parent in reversed(ancestors)]
+    candidates.append(here / ".env")
+    candidates.append(Path(".env"))
     seen: list[str] = []
     for path in candidates:
-        resolved = str(path)
+        resolved = str(path.resolve()) if path.exists() else str(path)
         if path.is_file() and resolved not in seen:
             seen.append(resolved)
     return tuple(seen)

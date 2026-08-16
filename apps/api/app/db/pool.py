@@ -45,15 +45,21 @@ async def agent_connection(agent_id: UUID | None = None) -> AsyncIterator[asyncp
     """Acquire a connection and optionally set RLS agent context."""
     pool = get_pool()
     async with pool.acquire() as conn:
-        # Bypass RLS for demo bootstrap when no agent set; when set, enforce.
-        if agent_id is not None:
+        # Session-level GUC so it survives asyncpg autocommit; always restore
+        # before returning the connection to the pool.
+        previous = await conn.fetchval("SELECT current_setting('app.current_agent_id', true)")
+        try:
+            if agent_id is not None:
+                await conn.execute(
+                    "SELECT set_config('app.current_agent_id', $1, false)",
+                    str(agent_id),
+                )
+            yield conn
+        finally:
             await conn.execute(
-                "SELECT set_config('app.current_agent_id', $1, true)",
-                str(agent_id),
+                "SELECT set_config('app.current_agent_id', $1, false)",
+                previous or "",
             )
-            # Force RLS even for table owner in demo
-            await conn.execute("SET LOCAL row_security = on")
-        yield conn
 
 
 @asynccontextmanager
@@ -61,5 +67,24 @@ async def admin_connection() -> AsyncIterator[asyncpg.Connection]:
     """Connection without RLS agent context (for agent creation / token lookup)."""
     pool = get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("SET LOCAL row_security = off")
-        yield conn
+        previous = await conn.fetchval("SELECT current_setting('app.current_agent_id', true)")
+        rls_disabled = False
+        try:
+            await conn.execute("SELECT set_config('app.current_agent_id', '', false)")
+            try:
+                await conn.execute("SET row_security = off")
+                rls_disabled = True
+            except asyncpg.PostgresError:
+                # Non-superusers cannot disable RLS; empty current_agent_id is the admin path.
+                pass
+            yield conn
+        finally:
+            await conn.execute(
+                "SELECT set_config('app.current_agent_id', $1, false)",
+                previous or "",
+            )
+            if rls_disabled:
+                try:
+                    await conn.execute("SET row_security = on")
+                except asyncpg.PostgresError:
+                    pass

@@ -94,24 +94,56 @@ DROP POLICY IF EXISTS messages_all ON messages;
 CREATE POLICY agents_insert ON agents
     FOR INSERT WITH CHECK (true);
 
+-- Empty current_agent_id = admin path (token lookup, ingest). SET row_security = off
+-- is not available to non-superusers on Neon/Railway, so the GUC is the bypass.
 CREATE POLICY agents_select ON agents
-    FOR SELECT USING (id::text = current_setting('app.current_agent_id', true));
+    FOR SELECT USING (
+        COALESCE(current_setting('app.current_agent_id', true), '') = ''
+        OR id::text = current_setting('app.current_agent_id', true)
+    );
 
 CREATE POLICY agents_update ON agents
-    FOR UPDATE USING (id::text = current_setting('app.current_agent_id', true));
+    FOR UPDATE USING (
+        COALESCE(current_setting('app.current_agent_id', true), '') = ''
+        OR id::text = current_setting('app.current_agent_id', true)
+    );
 
 CREATE POLICY memories_all ON memories
-    FOR ALL USING (agent_id::text = current_setting('app.current_agent_id', true))
-    WITH CHECK (agent_id::text = current_setting('app.current_agent_id', true));
+    FOR ALL USING (
+        COALESCE(current_setting('app.current_agent_id', true), '') = ''
+        OR agent_id::text = current_setting('app.current_agent_id', true)
+    )
+    WITH CHECK (
+        COALESCE(current_setting('app.current_agent_id', true), '') = ''
+        OR agent_id::text = current_setting('app.current_agent_id', true)
+    );
 
 CREATE POLICY chunks_all ON chunks
-    FOR ALL USING (agent_id::text = current_setting('app.current_agent_id', true))
-    WITH CHECK (agent_id::text = current_setting('app.current_agent_id', true));
+    FOR ALL USING (
+        COALESCE(current_setting('app.current_agent_id', true), '') = ''
+        OR agent_id::text = current_setting('app.current_agent_id', true)
+    )
+    WITH CHECK (
+        COALESCE(current_setting('app.current_agent_id', true), '') = ''
+        OR agent_id::text = current_setting('app.current_agent_id', true)
+    );
 
 CREATE POLICY chat_sessions_all ON chat_sessions
-    FOR ALL USING (agent_id::text = current_setting('app.current_agent_id', true))
-    WITH CHECK (agent_id::text = current_setting('app.current_agent_id', true));
+    FOR ALL USING (
+        COALESCE(current_setting('app.current_agent_id', true), '') = ''
+        OR agent_id::text = current_setting('app.current_agent_id', true)
+    )
+    WITH CHECK (
+        COALESCE(current_setting('app.current_agent_id', true), '') = ''
+        OR agent_id::text = current_setting('app.current_agent_id', true)
+    );
 
 CREATE POLICY messages_all ON messages
-    FOR ALL USING (agent_id::text = current_setting('app.current_agent_id', true))
-    WITH CHECK (agent_id::text = current_setting('app.current_agent_id', true));
+    FOR ALL USING (
+        COALESCE(current_setting('app.current_agent_id', true), '') = ''
+        OR agent_id::text = current_setting('app.current_agent_id', true)
+    )
+    WITH CHECK (
+        COALESCE(current_setting('app.current_agent_id', true), '') = ''
+        OR agent_id::text = current_setting('app.current_agent_id', true)
+    );

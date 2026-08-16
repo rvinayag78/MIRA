@@ -13,6 +13,11 @@ class VoyageError(RuntimeError):
     pass
 
 
+def _standard_embeddings(data: dict[str, Any]) -> list[list[float]]:
+    items = sorted(data.get("data", []), key=lambda x: x.get("index", 0))
+    return [item["embedding"] for item in items]
+
+
 async def embed_documents(texts: list[str], *, document_context: str | None = None) -> list[list[float]]:
     """
     Embed with voyage-context-4 at 1024d.
@@ -30,44 +35,42 @@ async def embed_documents(texts: list[str], *, document_context: str | None = No
         "Content-Type": "application/json",
     }
 
-    # Prefer contextualized embeddings API
+    # Prefer contextualized embeddings: one document whose chunks are `texts`.
     if document_context is not None:
         payload: dict[str, Any] = {
             "model": settings.voyage_embed_model,
-            "inputs": [[document_context, t] for t in texts],
+            "inputs": [list(texts)],
             "input_type": "document",
             "output_dimension": settings.voyage_embed_dim,
         }
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"{VOYAGE_BASE}/contextualizedembeddings",
-                headers=headers,
-                json=payload,
-            )
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(
+                    f"{VOYAGE_BASE}/contextualizedembeddings",
+                    headers=headers,
+                    json=payload,
+                )
             if resp.status_code < 400:
-                data = resp.json()
-                # Response shape: data[].data[].embedding or data[].embeddings
-                return _parse_contextualized(data)
+                parsed = _parse_contextualized(resp.json())
+                if len(parsed) == len(texts):
+                    return parsed
+        except (VoyageError, httpx.HTTPError, ValueError, KeyError, TypeError):
+            pass
 
-    # Standard embeddings fallback / query path
     payload = {
         "model": settings.voyage_embed_model,
         "input": texts,
-        "input_type": "document" if document_context is not None else "query",
+        "input_type": "document",
         "output_dimension": settings.voyage_embed_dim,
     }
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(f"{VOYAGE_BASE}/embeddings", headers=headers, json=payload)
         if resp.status_code >= 400:
             raise VoyageError(f"Voyage embed error {resp.status_code}: {resp.text}")
-        data = resp.json()
-        items = sorted(data.get("data", []), key=lambda x: x.get("index", 0))
-        return [item["embedding"] for item in items]
+        return _standard_embeddings(resp.json())
 
 
 async def embed_query(query: str) -> list[float]:
-    vectors = await embed_documents([query], document_context=None)
-    # Re-call with query input_type
     settings = get_settings()
     if not settings.voyage_api_key:
         raise VoyageError("VOYAGE_API_KEY is not set")
@@ -84,31 +87,32 @@ async def embed_query(query: str) -> list[float]:
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(f"{VOYAGE_BASE}/embeddings", headers=headers, json=payload)
         if resp.status_code >= 400:
-            # fall back to previous result if any
-            if vectors:
-                return vectors[0]
             raise VoyageError(f"Voyage query embed error {resp.status_code}: {resp.text}")
-        data = resp.json()
-        items = sorted(data.get("data", []), key=lambda x: x.get("index", 0))
-        return items[0]["embedding"]
+        items = _standard_embeddings(resp.json())
+        if not items:
+            raise VoyageError("Voyage query embed returned no data")
+        return items[0]
 
 
 def _parse_contextualized(data: dict[str, Any]) -> list[list[float]]:
     out: list[list[float]] = []
     for item in data.get("data", []):
-        if "embedding" in item:
+        if isinstance(item, dict) and "embedding" in item:
             out.append(item["embedding"])
-        elif "data" in item:
-            # nested: list of chunk embeddings per document
-            nested = item["data"]
-            if nested and "embedding" in nested[0]:
-                # we sent one chunk per input pair; take first
-                out.append(nested[0]["embedding"])
-            elif nested and "embeddings" in nested[0]:
-                out.append(nested[0]["embeddings"][0])
-        elif "embeddings" in item:
-            emb = item["embeddings"]
-            out.append(emb[0] if isinstance(emb[0], list) else emb)
+            continue
+        nested = None
+        if isinstance(item, dict):
+            nested = item.get("data") or item.get("embeddings")
+        if not isinstance(nested, list):
+            continue
+        for sub in nested:
+            if isinstance(sub, dict) and "embedding" in sub:
+                out.append(sub["embedding"])
+            elif isinstance(sub, dict) and "embeddings" in sub:
+                emb = sub["embeddings"]
+                out.append(emb[0] if emb and isinstance(emb[0], list) else emb)
+            elif isinstance(sub, list) and sub and isinstance(sub[0], (int, float)):
+                out.append(sub)
     if not out:
         raise VoyageError(f"Unexpected Voyage contextualized response: {data}")
     return out

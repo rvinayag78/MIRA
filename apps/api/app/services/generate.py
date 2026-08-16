@@ -126,13 +126,20 @@ async def ground_answer(question: str, chunks: list[RetrievedChunk]) -> Grounded
 
     allowed = {str(c.id) for c in chunks}
     citations: list[Citation] = []
-    for c in parsed.get("citations") or []:
-        cid = str(c.get("chunk_id", ""))
-        if cid in allowed:
-            citations.append(Citation(chunk_id=cid, quote=str(c.get("quote", ""))[:500]))
+    raw_cites = parsed.get("citations") or []
+    if isinstance(raw_cites, list):
+        for c in raw_cites:
+            if not isinstance(c, dict):
+                continue
+            cid = str(c.get("chunk_id", ""))
+            if cid in allowed:
+                citations.append(Citation(chunk_id=cid, quote=str(c.get("quote", ""))[:500]))
 
     answer = str(parsed.get("answer") or "").strip() or REFUSAL
-    confidence = float(parsed.get("confidence") or 0.0)
+    try:
+        confidence = float(parsed.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
     refused = REFUSAL.lower() in answer.lower() or not citations
 
     # Post-check: drop citations not in retrieved set (already filtered)

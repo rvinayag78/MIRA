@@ -38,3 +38,20 @@ def test_citation_validation():
 
 def test_refusal_constant():
     assert "recorded memories" in REFUSAL.lower()
+
+
+def test_parse_contextualized_keeps_every_chunk():
+    from app.services.voyage import _parse_contextualized
+
+    data = {
+        "data": [
+            {
+                "object": "list",
+                "data": [
+                    {"object": "embedding", "embedding": [0.1, 0.2], "index": 0},
+                    {"object": "embedding", "embedding": [0.3, 0.4], "index": 1},
+                ],
+            }
+        ]
+    }
+    assert _parse_contextualized(data) == [[0.1, 0.2], [0.3, 0.4]]
