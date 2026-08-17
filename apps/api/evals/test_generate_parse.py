@@ -6,6 +6,7 @@ from app.services.generate import (
     GroundedAnswer,
     _parse_json,
     check_citations_valid,
+    broaden_retrieval_query,
     expand_retrieval_query,
 )
 from app.services.retrieve import RetrievedChunk
@@ -56,6 +57,14 @@ def test_expand_retrieval_query_follow_up():
     history = [{"role": "user", "content": "What was your childhood home like?"}]
     assert "childhood home" in expand_retrieval_query("tell me more", history)
     assert expand_retrieval_query("Where did you work?", history) == "Where did you work?"
+
+
+def test_broaden_retrieval_query_family_and_early():
+    dad = broaden_retrieval_query("What was dad like?")
+    assert "father" in dad
+    early = broaden_retrieval_query("what's an early memory?")
+    assert "childhood" in early
+    assert broaden_retrieval_query("Where did you work?") == "Where did you work?"
 
 
 def test_refusal_constant():

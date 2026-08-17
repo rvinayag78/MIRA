@@ -52,7 +52,7 @@ export default function KeeperPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [turns]);
+  }, [turns, busy]);
 
   async function ask(message: string) {
     const text = message.trim();
@@ -167,7 +167,7 @@ export default function KeeperPage() {
         )}
         {!locked && turns.length === 0 && (
           <p className="rise" style={{ color: "var(--muted)" }}>
-            Try: “What was your childhood home like?”
+            Try: “What was dad like?” or “What’s an early memory?”
           </p>
         )}
         {turns.map((t, i) => (
@@ -194,6 +194,22 @@ export default function KeeperPage() {
             </p>
           </article>
         ))}
+        {busy && (
+          <article
+            className="rise thinking"
+            aria-live="polite"
+            aria-label="Remembering"
+            style={{ alignSelf: "flex-start" }}
+          >
+            <span className="thinking-orb" aria-hidden />
+            <span>Remembering</span>
+            <span className="thinking-dots" aria-hidden>
+              <span />
+              <span />
+              <span />
+            </span>
+          </article>
+        )}
         <div ref={bottomRef} />
       </section>
 

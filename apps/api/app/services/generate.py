@@ -57,6 +57,17 @@ _FOLLOW_UP = re.compile(
 )
 
 
+_THEME_TERMS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\b(dad|daddy|father|papa)\b", re.I), "dad father papa parent"),
+    (re.compile(r"\b(mom|mum|mama|mother)\b", re.I), "mom mother mama parent"),
+    (
+        re.compile(r"\b(early|childhood|young|growing up|first)\b", re.I),
+        "early childhood young first growing up kid",
+    ),
+    (re.compile(r"\b(memory|memories|story|stories)\b", re.I), "memory story"),
+]
+
+
 def expand_retrieval_query(
     question: str, history: list[dict[str, str]] | None = None
 ) -> str:
@@ -71,6 +82,17 @@ def expand_retrieval_query(
     if prior_user and (len(q.split()) <= 3 or _FOLLOW_UP.search(q)):
         return f"{prior_user} {q}"
     return q
+
+
+def broaden_retrieval_query(question: str) -> str:
+    """Add everyday synonyms so dense search can match related memories."""
+    extra: list[str] = []
+    for pat, terms in _THEME_TERMS:
+        if pat.search(question):
+            extra.append(terms)
+    if not extra:
+        return question.strip()
+    return f"{question.strip()} {' '.join(extra)}"
 
 
 def _history_block(history: list[dict[str, str]] | None) -> str:
@@ -100,15 +122,16 @@ async def route_intent(
         + f"A keeper is talking to a memory of {maker_name}. The agent will answer AS {maker_name}.\n"
         "The keeper may say \"you\" (addressing the maker) or they/he/she (about the maker). Both are in-scope.\n"
         "Follow-ups like \"tell me more\" after a memory question are answerable_from_memories.\n"
+        "Broad life questions are answerable even if they do not name a specific memory: "
+        "\"What was dad like?\", \"What's an early memory?\", \"Tell me a story\".\n"
         "Return ONLY one label:\n"
-        "- answerable_from_memories: anything about the maker's life, stories, people, places, "
-        "feelings, or what they recorded — e.g. \"What was your childhood home like?\", "
-        "\"What did they say about their mom?\"\n"
-        "- clarify: too vague to retrieve (e.g. \"tell me stuff\") with no prior thread\n"
+        "- answerable_from_memories: anything about the maker's life, people, places, feelings, "
+        "or a request to hear a recorded memory — including open prompts\n"
+        "- clarify: empty or unintelligible only\n"
         "- refuse_out_of_scope: world knowledge, news, advice, or topics clearly not about "
         "this person's recorded life\n"
-        "- smalltalk: greetings / thanks\n"
-        "Never refuse just because the question uses you/they/he/she.\n\n"
+        "- smalltalk: greetings / thanks with no request for a memory\n"
+        "Never refuse or clarify just because the question is broad or uses you/they/he/she.\n\n"
         f"User: {question}"
     )
     msg = await client.messages.create(
@@ -167,13 +190,21 @@ async def ground_answer(
         "The keeper may say \"you\" or they/he/she — they mean you. "
         "Recent conversation is only for understanding follow-ups; it is not evidence. "
         "If an earlier reply said something that is not in this evidence, ignore it.\n"
+        "Open questions: the keeper does not need to name a place, date, or exact story. "
+        "Choose the recorded memory that best fits the spirit of the question and tell that "
+        "story in first person. Examples: \"What was dad like?\" → recount a memory that "
+        "includes dad/father (a trip, a scene), without inventing a character study. "
+        "\"What's an early memory?\" / \"tell me a story\" → tell the most fitting early, "
+        "childhood, or first recorded story (for example a first car, if that is in the evidence).\n"
         "Hard limits — no hallucinations:\n"
         "- Do not invent names, places, dates, feelings, jobs, or events missing from the evidence.\n"
         "- Do not fill gaps with what someone like you \"would\" have done or felt.\n"
         "- Do not complete a story the evidence does not finish.\n"
         "- If you only have a partial answer, say only what you recorded and stop.\n"
-        "- If the evidence does not answer the question, refuse with exactly: "
+        "- Only refuse if none of the evidence is related to the question at all, with exactly: "
         f'"{REFUSAL}"\n'
+        "- Never refuse just because the question is broader than one scene or does not mention "
+        "the place or title of the memory.\n"
         "Citations: for each factual claim, include chunk_id and a short quote copied verbatim "
         "from that chunk (a substring of the chunk text). Do not paraphrase the quote.\n"
         "Return strict JSON: "
@@ -256,17 +287,6 @@ async def answer_question(
     if intent == "smalltalk":
         return GroundedAnswer(
             answer="Hi — ask me about what I recorded.",
-            citations=[],
-            confidence=1.0,
-            refused=False,
-            intent=intent,
-        )
-    if intent == "clarify":
-        return GroundedAnswer(
-            answer=(
-                "Could you ask me something more specific — a person, place, "
-                "or time I talked about?"
-            ),
             citations=[],
             confidence=1.0,
             refused=False,

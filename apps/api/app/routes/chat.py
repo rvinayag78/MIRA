@@ -11,7 +11,7 @@ from app.db import queries
 from app.db.pool import admin_connection, agent_connection
 from app.schemas import ChatRequest, ChatResponse, CitationOut
 from app.services import elevenlabs, generate
-from app.services.retrieve import hybrid_retrieve
+from app.services.retrieve import retrieve_for_chat
 from app.services.voyage import VoyageError
 
 router = APIRouter(tags=["chat"])
@@ -53,8 +53,11 @@ async def chat(body: ChatRequest) -> ChatResponse:
 
     try:
         retrieve_q = generate.expand_retrieval_query(body.message, history)
+        semantic_q = generate.broaden_retrieval_query(retrieve_q)
         async with agent_connection(agent_id) as conn:
-            chunks = await hybrid_retrieve(conn, agent_id, retrieve_q)
+            chunks = await retrieve_for_chat(
+                conn, agent_id, retrieve_q, semantic_query=semantic_q
+            )
         result = await generate.answer_question(
             body.message,
             chunks,

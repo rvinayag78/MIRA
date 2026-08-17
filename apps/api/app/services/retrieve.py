@@ -45,17 +45,33 @@ def reciprocal_rank_fusion(
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
 
+_SMALL_CORPUS = 40
+
+
+def _row_to_chunk(row: asyncpg.Record, score: float) -> RetrievedChunk:
+    return RetrievedChunk(
+        id=row["id"],
+        memory_id=row["memory_id"],
+        text=row["text"],
+        speaker=row["speaker"],
+        ts_start=row["ts_start"],
+        ts_end=row["ts_end"],
+        score=score,
+    )
+
+
 async def hybrid_retrieve(
     conn: asyncpg.Connection,
     agent_id: UUID,
     query: str,
     *,
+    semantic_query: str | None = None,
     rerank_enabled: bool | None = None,
 ) -> list[RetrievedChunk]:
     settings = get_settings()
     use_rerank = settings.rerank_enabled if rerank_enabled is None else rerank_enabled
 
-    query_emb = await voyage.embed_query(query)
+    query_emb = await voyage.embed_query(semantic_query or query)
     dense_rows = await queries.dense_search(conn, agent_id, query_emb, settings.dense_top_k)
     sparse_rows = await queries.sparse_search(conn, agent_id, query, settings.sparse_top_k)
 
@@ -72,17 +88,7 @@ async def hybrid_retrieve(
         row = by_id.get(doc_id)
         if row is None:
             continue
-        candidates.append(
-            RetrievedChunk(
-                id=row["id"],
-                memory_id=row["memory_id"],
-                text=row["text"],
-                speaker=row["speaker"],
-                ts_start=row["ts_start"],
-                ts_end=row["ts_end"],
-                score=float(score),
-            )
-        )
+        candidates.append(_row_to_chunk(row, float(score)))
 
     if use_rerank and candidates:
         docs = [c.text for c in candidates]
@@ -103,3 +109,28 @@ async def hybrid_retrieve(
             pass
 
     return candidates[: settings.final_top_k]
+
+
+async def retrieve_for_chat(
+    conn: asyncpg.Connection,
+    agent_id: UUID,
+    query: str,
+    *,
+    semantic_query: str | None = None,
+) -> list[RetrievedChunk]:
+    """Rank by hybrid search, then include the rest of a small memory set.
+
+    Open questions like "what was dad like?" can match a related story even when
+    the query does not name that place.
+    """
+    ranked = await hybrid_retrieve(conn, agent_id, query, semantic_query=semantic_query)
+    n = await conn.fetchval("SELECT COUNT(*) FROM chunks WHERE agent_id = $1", agent_id)
+    if n is None or int(n) > _SMALL_CORPUS:
+        return ranked
+    seen = {c.id for c in ranked}
+    extras: list[RetrievedChunk] = []
+    for row in await queries.load_all_chunks_for_agent(conn, agent_id):
+        if row["id"] in seen:
+            continue
+        extras.append(_row_to_chunk(row, 0.0))
+    return ranked + extras
