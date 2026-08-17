@@ -13,6 +13,32 @@ type Turn = {
   refused?: boolean;
 };
 
+function MicIcon() {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden
+    >
+      <rect x="9" y="2.5" width="6" height="11" rx="3" fill="currentColor" />
+      <path
+        d="M6 11.5a6 6 0 0 0 12 0"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M12 17.5v3.2M8.5 21h7"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 export default function KeeperPage() {
   const params = useParams<{ agentId: string }>();
   const search = useSearchParams();
@@ -202,11 +228,13 @@ export default function KeeperPage() {
             style={{ alignSelf: "flex-start" }}
           >
             <span className="thinking-orb" aria-hidden />
-            <span>Remembering</span>
-            <span className="thinking-dots" aria-hidden>
-              <span />
-              <span />
-              <span />
+            <span className="thinking-copy">
+              Remembering
+              <span className="thinking-dots" aria-hidden>
+                <i />
+                <i />
+                <i />
+              </span>
             </span>
           </article>
         )}
@@ -242,9 +270,12 @@ export default function KeeperPage() {
               color: "var(--ink)",
               cursor: "pointer",
               flexShrink: 0,
+              display: "grid",
+              placeItems: "center",
+              padding: 0,
             }}
           >
-            mic
+            <MicIcon />
           </button>
           <input
             value={input}
