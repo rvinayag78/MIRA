@@ -28,23 +28,26 @@ async def _embed_and_store(
         embeddings.extend(rest)
     embeddings = embeddings[: len(texts)]
 
+    # One transaction: a mid-loop failure must not leave orphan chunks searchable
+    # while the memory is later marked status=error (asyncpg autocommits otherwise).
     async with admin_connection() as conn:
-        await queries.delete_chunks_for_memory(conn, memory_id)
-        for i, (text, emb) in enumerate(zip(texts, embeddings)):
-            speaker, ts_start, ts_end = (None, None, None)
-            if meta and i < len(meta):
-                speaker, ts_start, ts_end = meta[i]
-            await queries.insert_chunk(
-                conn,
-                agent_id=agent_id,
-                memory_id=memory_id,
-                text=text,
-                speaker=speaker,
-                ts_start=ts_start,
-                ts_end=ts_end,
-                embedding=emb,
-            )
-        await queries.update_memory_status(conn, memory_id, "indexed")
+        async with conn.transaction():
+            await queries.delete_chunks_for_memory(conn, memory_id)
+            for i, (text, emb) in enumerate(zip(texts, embeddings)):
+                speaker, ts_start, ts_end = (None, None, None)
+                if meta and i < len(meta):
+                    speaker, ts_start, ts_end = meta[i]
+                await queries.insert_chunk(
+                    conn,
+                    agent_id=agent_id,
+                    memory_id=memory_id,
+                    text=text,
+                    speaker=speaker,
+                    ts_start=ts_start,
+                    ts_end=ts_end,
+                    embedding=emb,
+                )
+            await queries.update_memory_status(conn, memory_id, "indexed")
 
 
 async def ingest_memory(ctx: dict, memory_id: str) -> None:
