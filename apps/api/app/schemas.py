@@ -57,6 +57,8 @@ class ChatRequest(BaseModel):
 class CitationOut(BaseModel):
     chunk_id: str
     quote: str
+    memory_id: str | None = None
+    support_level: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -67,6 +69,8 @@ class ChatResponse(BaseModel):
     refused: bool
     intent: str
     audio_url: str | None = None
+    coverage: str | None = None
+    uncertainty: bool = False
 
 
 class HealthOut(BaseModel):

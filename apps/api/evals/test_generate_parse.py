@@ -33,7 +33,7 @@ def test_citation_validation():
     ]
     ok = GroundedAnswer(
         answer="It was blue",
-        citations=[Citation(chunk_id=str(cid), quote="blue bungalow")],
+        citations=[Citation(chunk_id=str(cid), quote="blue bungalow", memory_id=str(cid))],
     )
     punctuated = GroundedAnswer(
         answer="It was a blue bungalow.",

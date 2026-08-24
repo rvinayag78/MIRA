@@ -8,8 +8,9 @@ from uuid import UUID
 from app.config import get_settings
 from app.db import queries
 from app.db.pool import admin_connection, init_pool
-from app.services import assemblyai, elevenlabs, voyage
+from app.services import assemblyai, elevenlabs, extract, voyage
 from app.services.chunking import TextChunk, chunk_utterances
+from app.services.extract import fact_status_for_draft
 
 logger = logging.getLogger(__name__)
 
@@ -21,20 +22,44 @@ async def _embed_and_store(
     texts: list[str],
     document_context: str,
     meta: list[tuple[str | None, float | None, float | None]] | None = None,
-) -> None:
+) -> list[UUID]:
     embeddings = await voyage.embed_documents(texts, document_context=document_context or None)
     if len(embeddings) < len(texts):
         rest = await voyage.embed_documents(texts[len(embeddings) :])
         embeddings.extend(rest)
     embeddings = embeddings[: len(texts)]
 
+    # Structured extraction (fail-open inside extract service)
+    extraction = await extract.extract_memory_structure(
+        transcript=document_context or " ".join(texts),
+        chunk_texts=texts,
+    )
+
+    chunk_ids: list[UUID] = []
     async with admin_connection() as conn:
+        await queries.delete_knowledge_facts_for_memory(conn, memory_id)
         await queries.delete_chunks_for_memory(conn, memory_id)
+        await queries.update_memory_transcripts(
+            conn,
+            memory_id,
+            raw_transcript=document_context or None,
+            cleaned_transcript=extraction.cleaned_transcript,
+        )
         for i, (text, emb) in enumerate(zip(texts, embeddings)):
             speaker, ts_start, ts_end = (None, None, None)
             if meta and i < len(meta):
                 speaker, ts_start, ts_end = meta[i]
-            await queries.insert_chunk(
+            chunk_meta = (
+                extraction.chunk_metas[i].to_dict()
+                if i < len(extraction.chunk_metas)
+                else {}
+            )
+            salience = (
+                extraction.chunk_saliences[i]
+                if i < len(extraction.chunk_saliences)
+                else 0.5
+            )
+            cid = await queries.insert_chunk(
                 conn,
                 agent_id=agent_id,
                 memory_id=memory_id,
@@ -43,12 +68,50 @@ async def _embed_and_store(
                 ts_start=ts_start,
                 ts_end=ts_end,
                 embedding=emb,
+                meta=chunk_meta,
+                salience=salience,
             )
+            chunk_ids.append(cid)
+
+        # Persist candidate / established semantic facts with provenance
+        for draft in extraction.fact_drafts:
+            src_chunks = [
+                chunk_ids[i]
+                for i in draft.source_chunk_indices
+                if 0 <= i < len(chunk_ids)
+            ]
+            if not src_chunks:
+                continue
+            try:
+                fact_embs = await voyage.embed_documents([draft.statement])
+            except Exception:  # noqa: BLE001
+                logger.exception("Fact embed failed; skipping fact")
+                continue
+            if not fact_embs:
+                continue
+            status = fact_status_for_draft(draft, evidence_count=1)
+            await queries.upsert_knowledge_fact(
+                conn,
+                agent_id=agent_id,
+                statement=draft.statement,
+                category=draft.category,
+                people=draft.people,
+                places=draft.places,
+                topics=draft.topics,
+                confidence=draft.confidence,
+                salience=draft.salience,
+                status=status,
+                supporting_chunk_ids=src_chunks,
+                supporting_memory_ids=[memory_id],
+                embedding=fact_embs[0],
+            )
+
         await queries.update_memory_status(conn, memory_id, "indexed")
+    return chunk_ids
 
 
 async def ingest_memory(ctx: dict, memory_id: str) -> None:
-    """Ingest text or voice memory → chunk → embed → upsert chunks."""
+    """Ingest text or voice memory → chunk → embed → extract → upsert chunks/facts."""
     await init_pool()
     mid = UUID(memory_id)
     settings = get_settings()

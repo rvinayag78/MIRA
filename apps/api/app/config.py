@@ -62,10 +62,13 @@ class Settings(BaseSettings):
     sparse_top_k: int = 20
     rrf_k: int = 60
     final_top_k: int = 8
+    retrieve_max_per_memory: int = 2
 
     # Eval thresholds
     recall_at_k_threshold: float = 0.7
     faithfulness_threshold: float = 0.85
+    hallucination_rate_threshold: float = 0.15
+    uncertainty_accuracy_threshold: float = 0.8
 
     @property
     def cors_origins(self) -> list[str]:

@@ -11,7 +11,8 @@ from app.db import queries
 from app.db.pool import admin_connection, agent_connection
 from app.schemas import ChatRequest, ChatResponse, CitationOut
 from app.services import elevenlabs, generate
-from app.services.retrieve import retrieve_for_chat
+from app.services.evidence import build_evidence_package
+from app.services.retrieve import retrieve_substance
 from app.services.voyage import VoyageError
 
 router = APIRouter(tags=["chat"])
@@ -55,14 +56,27 @@ async def chat(body: ChatRequest) -> ChatResponse:
         retrieve_q = generate.expand_retrieval_query(body.message, history)
         semantic_q = generate.broaden_retrieval_query(retrieve_q)
         async with agent_connection(agent_id) as conn:
-            chunks = await retrieve_for_chat(
-                conn, agent_id, retrieve_q, semantic_query=semantic_q
+            retrieval = await retrieve_substance(
+                conn,
+                agent_id,
+                body.message,
+                expanded_query=retrieve_q,
+                semantic_query=semantic_q,
             )
+        chunks = retrieval.chunks
+        evidence = build_evidence_package(
+            body.message,
+            chunks,
+            retrieval.facts,
+            query=retrieval.query,
+        )
         result = await generate.answer_question(
             body.message,
             chunks,
             maker_name=agent["display_name"] or "the maker",
             history=history,
+            facts=retrieval.facts,
+            evidence=evidence,
         )
     except VoyageError as exc:
         logger.exception("Retrieval failed")
@@ -71,13 +85,16 @@ async def chat(body: ChatRequest) -> ChatResponse:
         logger.exception("Chat generation failed")
         raise HTTPException(status_code=502, detail=str(exc)[:800]) from exc
 
+    # Soft uncertainty answers may have empty citations; only hard-fail invented cites
     if result.citations and not generate.check_citations_valid(result, chunks):
         result = generate.GroundedAnswer(
-            answer=generate.REFUSAL,
+            answer=generate.DEFAULT_UNCERTAINTY,
             citations=[],
             confidence=0.0,
             refused=True,
             intent=result.intent,
+            coverage=evidence.coverage,
+            uncertainty=True,
         )
 
     audio_url = None
@@ -92,6 +109,11 @@ async def chat(body: ChatRequest) -> ChatResponse:
         except elevenlabs.ElevenLabsError:
             audio_url = None
 
+    # Persist citations with provenance for later "where did this come from?"
+    citation_payload = [c.to_dict() for c in result.citations]
+    if result.provenance and not citation_payload:
+        citation_payload = [p.to_dict() for p in result.provenance]
+
     async with agent_connection(agent_id) as conn:
         await queries.insert_message(
             conn,
@@ -99,18 +121,28 @@ async def chat(body: ChatRequest) -> ChatResponse:
             agent_id=agent_id,
             role="assistant",
             content=result.answer,
-            citations=[c.__dict__ for c in result.citations],
+            citations=citation_payload,
             audio_uri=audio_uri,
         )
 
     return ChatResponse(
         session_id=session_id,
         answer=result.answer,
-        citations=[CitationOut(chunk_id=c.chunk_id, quote=c.quote) for c in result.citations],
+        citations=[
+            CitationOut(
+                chunk_id=c.chunk_id,
+                quote=c.quote,
+                memory_id=c.memory_id,
+                support_level=c.support_level,
+            )
+            for c in result.citations
+        ],
         confidence=result.confidence,
         refused=result.refused,
         intent=result.intent,
         audio_url=audio_url,
+        coverage=result.coverage,
+        uncertainty=result.uncertainty,
     )
 
 

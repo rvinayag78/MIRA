@@ -57,4 +57,7 @@ cd apps/api && pytest evals/ -q
 python -m evals.run_gate
 ```
 
+Substance gate measures Recall@k, hit-rate@K, unsupported-claim rate, and uncertainty
+appropriateness (including adversarial questions about events not in memory).
+
 Rerank stays disabled (`RERANK_ENABLED=false`) until the CI gate passes Recall@k / faithfulness thresholds.

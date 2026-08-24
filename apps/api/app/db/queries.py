@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 from typing import Any
 from uuid import UUID
@@ -127,7 +128,8 @@ async def list_memories(conn: asyncpg.Connection, agent_id: UUID) -> list[asyncp
 async def get_memory(conn: asyncpg.Connection, memory_id: UUID) -> asyncpg.Record | None:
     return await conn.fetchrow(
         """
-        SELECT id, agent_id, kind, text_content, audio_uri, duration_ms, status, error_message,
+        SELECT id, agent_id, kind, text_content, raw_transcript, cleaned_transcript,
+               audio_uri, duration_ms, status, error_message,
                assemblyai_transcript_id, created_at
         FROM memories WHERE id = $1
         """,
@@ -158,8 +160,62 @@ async def update_memory_status(
     )
 
 
+async def update_memory_transcripts(
+    conn: asyncpg.Connection,
+    memory_id: UUID,
+    *,
+    raw_transcript: str | None,
+    cleaned_transcript: str | None,
+) -> None:
+    await conn.execute(
+        """
+        UPDATE memories
+        SET raw_transcript = COALESCE($2, raw_transcript),
+            cleaned_transcript = COALESCE($3, cleaned_transcript)
+        WHERE id = $1
+        """,
+        memory_id,
+        raw_transcript,
+        cleaned_transcript,
+    )
+
+
 async def delete_chunks_for_memory(conn: asyncpg.Connection, memory_id: UUID) -> None:
     await conn.execute("DELETE FROM chunks WHERE memory_id = $1", memory_id)
+
+
+async def delete_knowledge_facts_for_memory(
+    conn: asyncpg.Connection, memory_id: UUID
+) -> None:
+    """Remove facts whose only supporting memory is this one; else drop the link."""
+    rows = await conn.fetch(
+        """
+        SELECT id, supporting_memory_ids, supporting_chunk_ids, evidence_count
+        FROM knowledge_facts
+        WHERE $1 = ANY(supporting_memory_ids)
+        """,
+        memory_id,
+    )
+    for row in rows:
+        mem_ids = [m for m in (row["supporting_memory_ids"] or []) if m != memory_id]
+        if not mem_ids:
+            await conn.execute("DELETE FROM knowledge_facts WHERE id = $1", row["id"])
+            continue
+        chunk_ids = list(row["supporting_chunk_ids"] or [])
+        await conn.execute(
+            """
+            UPDATE knowledge_facts
+            SET supporting_memory_ids = $2,
+                supporting_chunk_ids = $3,
+                evidence_count = GREATEST(1, $4),
+                updated_at = now()
+            WHERE id = $1
+            """,
+            row["id"],
+            mem_ids,
+            chunk_ids,
+            len(mem_ids),
+        )
 
 
 async def insert_chunk(
@@ -172,13 +228,18 @@ async def insert_chunk(
     ts_start: float | None,
     ts_end: float | None,
     embedding: list[float],
+    meta: dict[str, Any] | None = None,
+    salience: float = 0.5,
 ) -> UUID:
     # asyncpg needs vector as string for pgvector
     emb_str = "[" + ",".join(str(float(x)) for x in embedding) + "]"
     row = await conn.fetchrow(
         """
-        INSERT INTO chunks (agent_id, memory_id, text, speaker, ts_start, ts_end, embedding)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::vector)
+        INSERT INTO chunks (
+            agent_id, memory_id, text, speaker, ts_start, ts_end,
+            embedding, meta, salience
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7::vector, $8::jsonb, $9)
         RETURNING id
         """,
         agent_id,
@@ -188,9 +249,146 @@ async def insert_chunk(
         ts_start,
         ts_end,
         emb_str,
+        json.dumps(meta or {}),
+        max(0.0, min(1.0, float(salience))),
     )
     assert row is not None
     return row["id"]
+
+
+def _emb_str(embedding: list[float]) -> str:
+    return "[" + ",".join(str(float(x)) for x in embedding) + "]"
+
+
+async def upsert_knowledge_fact(
+    conn: asyncpg.Connection,
+    *,
+    agent_id: UUID,
+    statement: str,
+    category: str,
+    people: list[str],
+    places: list[str],
+    topics: list[str],
+    confidence: float,
+    salience: float,
+    status: str,
+    supporting_chunk_ids: list[UUID],
+    supporting_memory_ids: list[UUID],
+    embedding: list[float],
+    conflict_note: str | None = None,
+) -> UUID:
+    """Merge into a similar existing fact when cosine similarity is high."""
+    emb = _emb_str(embedding)
+    similar = await conn.fetchrow(
+        """
+        SELECT id, statement, supporting_chunk_ids, supporting_memory_ids,
+               evidence_count, confidence, status, conflict_note
+        FROM knowledge_facts
+        WHERE agent_id = $1 AND embedding IS NOT NULL
+        ORDER BY embedding <=> $2::vector
+        LIMIT 1
+        """,
+        agent_id,
+        emb,
+    )
+    merge = False
+    if similar is not None:
+        dist = await conn.fetchval(
+            """
+            SELECT embedding <=> $2::vector
+            FROM knowledge_facts WHERE id = $1
+            """,
+            similar["id"],
+            emb,
+        )
+        # cosine distance; ~0.25 ≈ reasonably similar statements
+        if dist is not None and float(dist) <= 0.25:
+            merge = True
+
+    if merge and similar is not None:
+        chunk_ids = list(dict.fromkeys([*(similar["supporting_chunk_ids"] or []), *supporting_chunk_ids]))
+        mem_ids = list(dict.fromkeys([*(similar["supporting_memory_ids"] or []), *supporting_memory_ids]))
+        evidence_count = len(mem_ids)
+        new_conf = max(float(similar["confidence"] or 0), confidence)
+        new_status = status
+        note = conflict_note or similar["conflict_note"]
+        # Conflicting statements about same topic → disputed
+        if _statements_conflict(similar["statement"], statement):
+            new_status = "disputed"
+            note = (
+                f"Conflicting recordings: '{similar['statement']}' vs '{statement}'"
+            )
+        elif evidence_count >= 2 and new_conf >= 0.55:
+            new_status = "established" if similar["status"] != "disputed" else "disputed"
+
+        await conn.execute(
+            """
+            UPDATE knowledge_facts
+            SET supporting_chunk_ids = $2,
+                supporting_memory_ids = $3,
+                evidence_count = $4,
+                confidence = $5,
+                status = $6,
+                conflict_note = $7,
+                salience = GREATEST(salience, $8),
+                updated_at = now()
+            WHERE id = $1
+            """,
+            similar["id"],
+            chunk_ids,
+            mem_ids,
+            evidence_count,
+            new_conf,
+            new_status,
+            note,
+            salience,
+        )
+        return similar["id"]
+
+    row = await conn.fetchrow(
+        """
+        INSERT INTO knowledge_facts (
+            agent_id, statement, category, people, places, topics,
+            confidence, evidence_count, supporting_chunk_ids, supporting_memory_ids,
+            status, salience, conflict_note, embedding
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6,
+            $7, $8, $9, $10,
+            $11, $12, $13, $14::vector
+        )
+        RETURNING id
+        """,
+        agent_id,
+        statement,
+        category,
+        people,
+        places,
+        topics,
+        confidence,
+        max(1, len(set(supporting_memory_ids))),
+        supporting_chunk_ids,
+        supporting_memory_ids,
+        status,
+        salience,
+        conflict_note,
+        emb,
+    )
+    assert row is not None
+    return row["id"]
+
+
+def _statements_conflict(a: str, b: str) -> bool:
+    """Cheap conflict heuristic: similar topic tokens but opposing year/place tokens."""
+    years_a = set(re.findall(r"\b(?:19|20)\d{2}\b", a))
+    years_b = set(re.findall(r"\b(?:19|20)\d{2}\b", b))
+    if years_a and years_b and years_a.isdisjoint(years_b):
+        # Same-ish wording but different years
+        ta = set(a.lower().split())
+        tb = set(b.lower().split())
+        if len(ta & tb) >= 3:
+            return True
+    return False
 
 
 async def count_indexed_memories(conn: asyncpg.Connection, agent_id: UUID) -> int:
@@ -259,7 +457,7 @@ async def dense_search(
     emb_str = "[" + ",".join(str(float(x)) for x in embedding) + "]"
     return await conn.fetch(
         """
-        SELECT id, memory_id, text, speaker, ts_start, ts_end,
+        SELECT id, memory_id, text, speaker, ts_start, ts_end, meta, salience,
                1 - (embedding <=> $2::vector) AS score
         FROM chunks
         WHERE agent_id = $1 AND embedding IS NOT NULL
@@ -277,10 +475,51 @@ async def sparse_search(
 ) -> list[asyncpg.Record]:
     return await conn.fetch(
         """
-        SELECT id, memory_id, text, speaker, ts_start, ts_end,
+        SELECT id, memory_id, text, speaker, ts_start, ts_end, meta, salience,
                ts_rank_cd(tsv, plainto_tsquery('english', $2)) AS score
         FROM chunks
         WHERE agent_id = $1 AND tsv @@ plainto_tsquery('english', $2)
+        ORDER BY score DESC
+        LIMIT $3
+        """,
+        agent_id,
+        query,
+        limit,
+    )
+
+
+async def dense_search_facts(
+    conn: asyncpg.Connection, agent_id: UUID, embedding: list[float], limit: int
+) -> list[asyncpg.Record]:
+    emb_str = "[" + ",".join(str(float(x)) for x in embedding) + "]"
+    return await conn.fetch(
+        """
+        SELECT id, statement, category, confidence, status, people, places, topics,
+               supporting_chunk_ids, supporting_memory_ids, conflict_note, salience,
+               1 - (embedding <=> $2::vector) AS score
+        FROM knowledge_facts
+        WHERE agent_id = $1 AND embedding IS NOT NULL
+          AND status IN ('established', 'candidate', 'disputed')
+        ORDER BY embedding <=> $2::vector
+        LIMIT $3
+        """,
+        agent_id,
+        emb_str,
+        limit,
+    )
+
+
+async def sparse_search_facts(
+    conn: asyncpg.Connection, agent_id: UUID, query: str, limit: int
+) -> list[asyncpg.Record]:
+    return await conn.fetch(
+        """
+        SELECT id, statement, category, confidence, status, people, places, topics,
+               supporting_chunk_ids, supporting_memory_ids, conflict_note, salience,
+               ts_rank_cd(tsv, plainto_tsquery('english', $2)) AS score
+        FROM knowledge_facts
+        WHERE agent_id = $1 AND tsv @@ plainto_tsquery('english', $2)
+          AND status IN ('established', 'candidate', 'disputed')
         ORDER BY score DESC
         LIMIT $3
         """,
@@ -297,7 +536,7 @@ async def get_chunks_by_ids(
         return []
     return await conn.fetch(
         """
-        SELECT id, memory_id, text, speaker, ts_start, ts_end
+        SELECT id, memory_id, text, speaker, ts_start, ts_end, meta, salience
         FROM chunks
         WHERE agent_id = $1 AND id = ANY($2::uuid[])
         """,
@@ -362,9 +601,22 @@ async def list_session_messages(
 async def load_all_chunks_for_agent(conn: asyncpg.Connection, agent_id: UUID) -> list[asyncpg.Record]:
     return await conn.fetch(
         """
-        SELECT id, memory_id, text, speaker, ts_start, ts_end
+        SELECT id, memory_id, text, speaker, ts_start, ts_end, meta, salience
         FROM chunks WHERE agent_id = $1
         ORDER BY created_at ASC
         """,
         agent_id,
+    )
+
+
+async def list_chunks_for_memory(
+    conn: asyncpg.Connection, memory_id: UUID
+) -> list[asyncpg.Record]:
+    return await conn.fetch(
+        """
+        SELECT id, memory_id, text, speaker, ts_start, ts_end, meta, salience
+        FROM chunks WHERE memory_id = $1
+        ORDER BY created_at ASC
+        """,
+        memory_id,
     )

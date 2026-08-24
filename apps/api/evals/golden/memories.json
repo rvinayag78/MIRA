@@ -7,11 +7,26 @@
       "chunks": [
         {
           "id": "chunk-home-1",
-          "text": "My childhood home was a blue bungalow on Maple Street in Portland. We had a cherry tree in the front yard that bloomed every April."
+          "text": "My childhood home was a blue bungalow on Maple Street in Portland. We had a cherry tree in the front yard that bloomed every April.",
+          "meta": {
+            "people": [],
+            "places": [{"name": "Maple Street", "confidence": 0.9}, {"name": "Portland", "confidence": 0.95}],
+            "time_periods": [{"text": "April", "approx_year": null, "confidence": 0.6}],
+            "topics": ["home", "childhood"],
+            "salience": 0.8
+          }
         },
         {
           "id": "chunk-home-2",
-          "text": "My sister Lena and I carved our initials into the porch railing in 1998."
+          "text": "My sister Lena and I carved our initials into the porch railing in 1998.",
+          "meta": {
+            "people": [{"name": "Lena", "relationship": "sister", "confidence": 0.95}],
+            "places": [],
+            "time_periods": [{"text": "1998", "approx_year": 1998, "confidence": 0.9}],
+            "topics": ["family", "home"],
+            "memorable_phrases": ["carved our initials into the porch railing"],
+            "salience": 0.85
+          }
         }
       ]
     },
@@ -21,13 +36,66 @@
       "chunks": [
         {
           "id": "chunk-job-1",
-          "text": "I worked at Harbor Bakery from 2010 to 2014. My favorite item to bake was cardamom buns on Saturday mornings."
+          "text": "I worked at Harbor Bakery from 2010 to 2014. My favorite item to bake was cardamom buns on Saturday mornings.",
+          "meta": {
+            "people": [],
+            "places": [{"name": "Harbor Bakery", "confidence": 0.95}],
+            "time_periods": [{"text": "2010 to 2014", "approx_year": 2010, "confidence": 0.9}],
+            "topics": ["work"],
+            "important_details": ["cardamom buns"],
+            "salience": 0.8
+          }
         },
         {
           "id": "chunk-job-2",
-          "text": "The owner, Mr. Patel, taught me to proof dough overnight."
+          "text": "The owner, Mr. Patel, taught me to proof dough overnight.",
+          "meta": {
+            "people": [{"name": "Patel", "relationship": null, "confidence": 0.85}],
+            "topics": ["work"],
+            "salience": 0.7
+          }
         }
       ]
+    },
+    {
+      "id": "mem-3",
+      "transcript": "I think Lena and I carved those initials around 1999, or maybe it was 1998 — the years blur together. We were still living in Portland then.",
+      "chunks": [
+        {
+          "id": "chunk-conflict-1",
+          "text": "I think Lena and I carved those initials around 1999, or maybe it was 1998 — the years blur together. We were still living in Portland then.",
+          "meta": {
+            "people": [{"name": "Lena", "relationship": null, "confidence": 0.8}],
+            "places": [{"name": "Portland", "confidence": 0.9}],
+            "time_periods": [
+              {"text": "1999", "approx_year": 1999, "confidence": 0.55},
+              {"text": "1998", "approx_year": 1998, "confidence": 0.55}
+            ],
+            "topics": ["family", "home"],
+            "salience": 0.75
+          }
+        }
+      ]
+    }
+  ],
+  "knowledge_facts": [
+    {
+      "id": "fact-lena",
+      "statement": "Has a sister named Lena.",
+      "category": "relationship",
+      "status": "established",
+      "confidence": 0.9,
+      "people": ["Lena"],
+      "supporting_chunk_ids": ["chunk-home-2"]
+    },
+    {
+      "id": "fact-bakery",
+      "statement": "Worked at Harbor Bakery from 2010 to 2014.",
+      "category": "attribute",
+      "status": "established",
+      "confidence": 0.9,
+      "places": ["Harbor Bakery"],
+      "supporting_chunk_ids": ["chunk-job-1"]
     }
   ],
   "questions": [
@@ -35,31 +103,66 @@
       "id": "q1",
       "question": "Where was the childhood home and what color was it?",
       "relevant_chunk_ids": ["chunk-home-1"],
-      "must_refuse": false
+      "must_refuse": false,
+      "expect_uncertainty": false,
+      "must_not_claim": ["Tokyo", "red victorian"]
     },
     {
       "id": "q2",
       "question": "Who is Lena and what did they carve?",
-      "relevant_chunk_ids": ["chunk-home-2"],
-      "must_refuse": false
+      "relevant_chunk_ids": ["chunk-home-2", "chunk-conflict-1"],
+      "must_refuse": false,
+      "expect_uncertainty": false,
+      "must_not_claim": ["brother"]
     },
     {
       "id": "q3",
       "question": "Where did they work and what did they like to bake?",
       "relevant_chunk_ids": ["chunk-job-1"],
-      "must_refuse": false
+      "must_refuse": false,
+      "expect_uncertainty": false,
+      "must_not_claim": ["croissant", "Paris"]
     },
     {
       "id": "q4",
       "question": "What is the capital of France?",
       "relevant_chunk_ids": [],
-      "must_refuse": true
+      "must_refuse": true,
+      "expect_uncertainty": false,
+      "adversarial": true
     },
     {
       "id": "q5",
       "question": "Did they ever live in Tokyo?",
       "relevant_chunk_ids": [],
-      "must_refuse": true
+      "must_refuse": true,
+      "expect_uncertainty": true,
+      "adversarial": true,
+      "must_not_claim": ["Tokyo", "Japan", "lived in Tokyo"]
+    },
+    {
+      "id": "q6",
+      "question": "Tell me about the trip to Yosemite with Sarah when she was eight.",
+      "relevant_chunk_ids": [],
+      "must_refuse": true,
+      "expect_uncertainty": true,
+      "adversarial": true,
+      "must_not_claim": ["Yosemite", "Sarah", "eight"]
+    },
+    {
+      "id": "q7",
+      "question": "What year did you and Lena carve the initials?",
+      "relevant_chunk_ids": ["chunk-home-2", "chunk-conflict-1"],
+      "must_refuse": false,
+      "expect_uncertainty": true,
+      "notes": "Conflicting years across memories; answer should hedge."
+    },
+    {
+      "id": "q8",
+      "question": "Did Mr. Patel teach you anything at the bakery?",
+      "relevant_chunk_ids": ["chunk-job-2", "chunk-job-1"],
+      "must_refuse": false,
+      "expect_uncertainty": false
     }
   ]
 }

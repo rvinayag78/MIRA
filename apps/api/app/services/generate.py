@@ -4,12 +4,17 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
-from uuid import UUID
 
 import anthropic
 
 from app.config import get_settings
-from app.services.retrieve import RetrievedChunk
+from app.services.evidence import (
+    UNCERTAINTY_PHRASES,
+    EvidencePackage,
+    build_evidence_package,
+)
+from app.services.memory_types import ProvenanceLink, SupportLevel
+from app.services.retrieve import RetrievedChunk, RetrievedFact
 
 RouteIntent = Literal[
     "answerable_from_memories",
@@ -23,6 +28,21 @@ RouteIntent = Literal[
 class Citation:
     chunk_id: str
     quote: str
+    memory_id: str | None = None
+    support_level: SupportLevel = "supported"
+    fact_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "chunk_id": self.chunk_id,
+            "quote": self.quote,
+            "support_level": self.support_level,
+        }
+        if self.memory_id:
+            d["memory_id"] = self.memory_id
+        if self.fact_id:
+            d["fact_id"] = self.fact_id
+        return d
 
 
 @dataclass
@@ -32,14 +52,20 @@ class GroundedAnswer:
     confidence: float = 0.0
     refused: bool = False
     intent: RouteIntent = "answerable_from_memories"
+    coverage: str = "none"
+    provenance: list[ProvenanceLink] = field(default_factory=list)
+    uncertainty: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "answer": self.answer,
-            "citations": [{"chunk_id": c.chunk_id, "quote": c.quote} for c in self.citations],
+            "citations": [c.to_dict() for c in self.citations],
             "confidence": self.confidence,
             "refused": self.refused,
             "intent": self.intent,
+            "coverage": self.coverage,
+            "uncertainty": self.uncertainty,
+            "provenance": [p.to_dict() for p in self.provenance],
         }
 
 
@@ -152,6 +178,13 @@ async def route_intent(
 
 
 REFUSAL = "I don’t have that in the recorded memories."
+DEFAULT_UNCERTAINTY = UNCERTAINTY_PHRASES[0]
+
+
+def _uncertainty_answer(coverage: str) -> str:
+    if coverage == "partial":
+        return UNCERTAINTY_PHRASES[1]
+    return UNCERTAINTY_PHRASES[0]
 
 
 async def ground_answer(
@@ -160,62 +193,65 @@ async def ground_answer(
     *,
     maker_name: str = "the maker",
     history: list[dict[str, str]] | None = None,
+    facts: list[RetrievedFact] | None = None,
+    evidence: EvidencePackage | None = None,
 ) -> GroundedAnswer:
+    package = evidence or build_evidence_package(question, chunks, facts)
     settings = get_settings()
-    if not chunks:
+
+    if package.coverage == "none" or (not package.episodic and not package.semantic):
+        answer = _uncertainty_answer("none")
         return GroundedAnswer(
-            answer=REFUSAL,
+            answer=answer,
             citations=[],
             confidence=0.0,
             refused=True,
             intent="answerable_from_memories",
+            coverage="none",
+            uncertainty=True,
         )
 
-    evidence = [
-        {
-            "chunk_id": str(c.id),
-            "text": c.text,
-            "speaker": c.speaker,
-        }
-        for c in chunks
-    ]
     who = maker_name.strip() or "the maker"
     system = (
         f"You are {who}. A keeper is speaking with you through your recorded memories.\n"
         "Speak in first person (I, me, my) the way you actually talk in the evidence: "
         "your wording, pacing, warmth or bluntness, the details you linger on. "
-        "Sound like a person remembering out loud, not a biography or a list.\n"
-        "You may weave several evidence chunks into one conversational reply and lightly "
-        "paraphrase, but every fact must come from the evidence chunks.\n"
-        "The keeper may say \"you\" or they/he/she — they mean you. "
-        "Recent conversation is only for understanding follow-ups; it is not evidence. "
-        "If an earlier reply said something that is not in this evidence, ignore it.\n"
-        "Open questions: the keeper does not need to name a place, date, or exact story. "
-        "Choose the recorded memory that best fits the spirit of the question and tell that "
-        "story in first person. Examples: \"What was dad like?\" → recount a memory that "
-        "includes dad/father (a trip, a scene), without inventing a character study. "
-        "\"What's an early memory?\" / \"tell me a story\" → tell the most fitting early, "
-        "childhood, or first recorded story (for example a first car, if that is in the evidence).\n"
-        "Hard limits — no hallucinations:\n"
-        "- Do not invent names, places, dates, feelings, jobs, or events missing from the evidence.\n"
-        "- Do not fill gaps with what someone like you \"would\" have done or felt.\n"
-        "- Do not complete a story the evidence does not finish.\n"
-        "- If you only have a partial answer, say only what you recorded and stop.\n"
-        "- Only refuse if none of the evidence is related to the question at all, with exactly: "
-        f'"{REFUSAL}"\n'
-        "- Never refuse just because the question is broader than one scene or does not mention "
-        "the place or title of the memory.\n"
-        "Citations: for each factual claim, include chunk_id and a short quote copied verbatim "
-        "from that chunk (a substring of the chunk text). Do not paraphrase the quote.\n"
+        "Sound like a person remembering out loud, not a biography or a list.\n\n"
+        "EVIDENCE RULES (substance grounding):\n"
+        "- Episodic memories are specific recorded experiences (source of truth).\n"
+        "- Semantic knowledge is distilled person-knowledge; treat 'candidate' as weak "
+        "and 'disputed' as conflicting — never present disputed details as certain.\n"
+        "- Internally classify every personal claim as:\n"
+        "  SUPPORTED: directly present in episodic text or an established fact.\n"
+        "  INFERRED: reasonably implied by multiple evidence pieces; hedge in wording.\n"
+        "  UNKNOWN: not in evidence — do not invent; use natural uncertainty.\n"
+        "- NEVER invent events, relationships, conversations, locations, dates, opinions, "
+        "feelings, experiences, or personal details because they sound plausible.\n"
+        "- If coverage is partial, say only what was recorded and acknowledge limits.\n"
+        "- If evidence conflicts (see conflicts), preserve uncertainty "
+        "(e.g. \"I think that was around 2008, although I might be mixing up the year.\").\n"
+        "- Do not convert a single anecdote into a lifelong fact unless semantic status "
+        "is established or the recording states it explicitly as a standing fact.\n"
+        "- Recent conversation is only for follow-ups; it is not evidence.\n\n"
+        "When you cannot answer from evidence, prefer natural uncertainty such as:\n"
+        f'- "{UNCERTAINTY_PHRASES[0]}"\n'
+        f'- "{UNCERTAINTY_PHRASES[1]}"\n'
+        f'- "{UNCERTAINTY_PHRASES[2]}"\n'
+        f'Hard out-of-scope / empty may still use: "{REFUSAL}"\n\n'
+        "Citations: for each factual claim, include chunk_id and a short quote copied "
+        "verbatim from that episodic chunk (substring). Optionally include memory_id "
+        "and support_level (supported|inferred). Do not paraphrase the quote.\n"
         "Return strict JSON: "
-        '{"answer": string, "citations": [{"chunk_id": string, "quote": string}], "confidence": number}\n'
+        '{"answer": string, "citations": [{"chunk_id": string, "quote": string, '
+        '"memory_id": string|null, "support_level": "supported"|"inferred"}], '
+        '"confidence": number, "uncertainty": boolean}\n'
         "confidence is 0-1."
     )
     user = json.dumps(
         {
             "question": question,
             "recent_conversation": (history or [])[-6:],
-            "evidence": evidence,
+            "evidence": package.to_prompt_dict(),
         },
         ensure_ascii=False,
     )
@@ -230,7 +266,8 @@ async def ground_answer(
     raw = "".join(b.text for b in msg.content if hasattr(b, "text")).strip()
     parsed = _parse_json(raw)
 
-    allowed = {str(c.id) for c in chunks}
+    mem_by_chunk = package.chunk_id_to_memory()
+    allowed = set(mem_by_chunk.keys())
     citations: list[Citation] = []
     raw_cites = parsed.get("citations") or []
     if isinstance(raw_cites, list):
@@ -238,28 +275,96 @@ async def ground_answer(
             if not isinstance(c, dict):
                 continue
             cid = str(c.get("chunk_id", ""))
-            if cid in allowed:
-                citations.append(Citation(chunk_id=cid, quote=str(c.get("quote", ""))[:500]))
+            if cid not in allowed:
+                continue
+            level = str(c.get("support_level") or "supported")
+            if level not in {"supported", "inferred"}:
+                level = "supported"
+            citations.append(
+                Citation(
+                    chunk_id=cid,
+                    quote=str(c.get("quote", ""))[:500],
+                    memory_id=str(c.get("memory_id") or mem_by_chunk.get(cid) or ""),
+                    support_level=level,  # type: ignore[arg-type]
+                )
+            )
 
-    answer = str(parsed.get("answer") or "").strip() or REFUSAL
+    answer = str(parsed.get("answer") or "").strip() or _uncertainty_answer(package.coverage)
     try:
         confidence = float(parsed.get("confidence") or 0.0)
     except (TypeError, ValueError):
         confidence = 0.0
-    citations = citations_grounded_in_chunks(citations, chunks)
-    refused = REFUSAL.lower() in answer.lower() or not citations
+    uncertainty_flag = bool(parsed.get("uncertainty")) or _looks_uncertain(answer)
 
-    # Post-check: drop citations not in retrieved set (already filtered)
-    if refused and REFUSAL not in answer:
-        answer = REFUSAL
+    citations = citations_grounded_in_chunks(citations, package.episodic)
+    # Enrich memory_id if missing
+    for cite in citations:
+        if not cite.memory_id:
+            cite.memory_id = mem_by_chunk.get(cite.chunk_id)
+
+    hard_refuse = REFUSAL.lower() in answer.lower()
+    no_evidence_claims = not citations and not uncertainty_flag and package.coverage != "strong"
+
+    if hard_refuse:
+        return GroundedAnswer(
+            answer=REFUSAL,
+            citations=[],
+            confidence=0.0,
+            refused=True,
+            intent="answerable_from_memories",
+            coverage=package.coverage,
+            uncertainty=False,
+        )
+
+    if no_evidence_claims and package.coverage != "strong":
+        # Model made claims without grounded citations → force uncertainty
+        return GroundedAnswer(
+            answer=_uncertainty_answer(package.coverage),
+            citations=[],
+            confidence=0.0,
+            refused=True,
+            intent="answerable_from_memories",
+            coverage=package.coverage,
+            uncertainty=True,
+        )
+
+    provenance = [
+        ProvenanceLink(
+            chunk_id=c.chunk_id,
+            memory_id=c.memory_id or mem_by_chunk.get(c.chunk_id, ""),
+            quote=c.quote,
+            support_level=c.support_level,
+            fact_id=c.fact_id,
+        )
+        for c in citations
+    ]
 
     return GroundedAnswer(
         answer=answer,
-        citations=[] if refused and answer == REFUSAL else citations,
-        confidence=0.0 if refused and answer == REFUSAL else max(0.0, min(1.0, confidence)),
-        refused=refused and answer == REFUSAL,
+        citations=citations,
+        confidence=max(0.0, min(1.0, confidence)),
+        refused=False,
         intent="answerable_from_memories",
+        coverage=package.coverage,
+        provenance=provenance,
+        uncertainty=uncertainty_flag,
     )
+
+
+def _looks_uncertain(answer: str) -> bool:
+    lower = answer.lower()
+    cues = (
+        "don't think i ever recorded",
+        "don't remember enough",
+        "don't have a clear memory",
+        "not sure",
+        "might be mixing",
+        "i'm not certain",
+        "i do not remember",
+        "can't say for sure",
+        "cannot say for sure",
+    )
+    return any(c in lower for c in cues) or any(p.lower() in lower for p in UNCERTAINTY_PHRASES)
 
 
 def _parse_json(raw: str) -> dict[str, Any]:
@@ -281,6 +386,8 @@ async def answer_question(
     *,
     maker_name: str = "the maker",
     history: list[dict[str, str]] | None = None,
+    facts: list[RetrievedFact] | None = None,
+    evidence: EvidencePackage | None = None,
 ) -> GroundedAnswer:
     intent = await route_intent(question, maker_name=maker_name, history=history)
 
@@ -291,6 +398,7 @@ async def answer_question(
             confidence=1.0,
             refused=False,
             intent=intent,
+            coverage="n/a",
         )
     if intent == "refuse_out_of_scope":
         return GroundedAnswer(
@@ -299,9 +407,17 @@ async def answer_question(
             confidence=1.0,
             refused=True,
             intent=intent,
+            coverage="none",
         )
 
-    return await ground_answer(question, chunks, maker_name=maker_name, history=history)
+    return await ground_answer(
+        question,
+        chunks,
+        maker_name=maker_name,
+        history=history,
+        facts=facts,
+        evidence=evidence,
+    )
 
 
 def _norm_text(value: str) -> str:
@@ -320,14 +436,16 @@ def citations_grounded_in_chunks(
     citations: list[Citation], chunks: list[RetrievedChunk]
 ) -> list[Citation]:
     """Keep citations whose quote is a verbatim substring of the cited chunk."""
-    by_id = {str(c.id): c.text for c in chunks}
+    by_id = {str(c.id): c for c in chunks}
     kept: list[Citation] = []
     for cite in citations:
         source = by_id.get(cite.chunk_id)
         quote = (cite.quote or "").strip()
         if not source or len(quote) < 8:
             continue
-        if _norm_text(quote) in _norm_text(source):
+        if _norm_text(quote) in _norm_text(source.text):
+            if not cite.memory_id:
+                cite.memory_id = str(source.memory_id)
             kept.append(cite)
     return kept
 
@@ -341,7 +459,7 @@ def check_citations_valid(answer: GroundedAnswer, chunks: list[RetrievedChunk]) 
 
 async def faithfulness_score(answer: str, evidence_texts: list[str]) -> float:
     """LLM-as-judge: fraction of answer supported by evidence (0-1)."""
-    if not answer.strip() or answer.strip() == REFUSAL:
+    if not answer.strip() or answer.strip() == REFUSAL or _looks_uncertain(answer):
         return 1.0
     if not evidence_texts:
         return 0.0
@@ -351,7 +469,8 @@ async def faithfulness_score(answer: str, evidence_texts: list[str]) -> float:
     prompt = (
         "Score faithfulness of the ANSWER given EVIDENCE.\n"
         "Return JSON only: {\"score\": number between 0 and 1}.\n"
-        "1 means fully supported; 0 means unsupported/hallucinated.\n\n"
+        "1 means fully supported; 0 means unsupported/hallucinated.\n"
+        "Treat appropriate uncertainty about missing info as faithful (score 1).\n\n"
         f"EVIDENCE:\n{json.dumps(evidence_texts, ensure_ascii=False)}\n\n"
         f"ANSWER:\n{answer}"
     )
