@@ -32,6 +32,9 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["app*", "evals*"]
 
+[tool.setuptools.package-data]
+app = ["db/*.sql"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["evals"]

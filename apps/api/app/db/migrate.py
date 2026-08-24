@@ -36,10 +36,53 @@ def _statements(sql: str) -> list[str]:
     return statements
 
 
+def _is_skippable_sql_error(stmt: str, exc: BaseException) -> bool:
+    """Ignore idempotent / non-critical DDL failures (esp. HNSW on small Neon plans)."""
+    msg = str(exc).lower()
+    sql = stmt.lower()
+    if any(
+        token in msg
+        for token in (
+            "already exists",
+            "duplicate",
+            "multiple primary keys",
+        )
+    ):
+        return True
+    # HNSW can fail on memory / unsupported builds; app works without it (seq/IVF).
+    if "hnsw" in sql and any(
+        token in msg
+        for token in (
+            "memory",
+            "hnsw",
+            "type \"vector\" does not exist",
+            "operator class",
+            "is not supported",
+        )
+    ):
+        return True
+    return False
+
+
+async def _execute_stmt(conn: asyncpg.Connection, stmt: str) -> None:
+    try:
+        await conn.execute(stmt)
+    except Exception as exc:  # noqa: BLE001 — classify skip vs fail
+        if _is_skippable_sql_error(stmt, exc):
+            preview = " ".join(stmt.split())[:120]
+            print(f"Skipping DDL ({exc}): {preview}")
+            return
+        preview = " ".join(stmt.split())[:200]
+        print(f"SQL failed: {preview}")
+        raise
+
+
 async def _run_sql_file(conn: asyncpg.Connection, path: Path) -> None:
+    if not path.is_file():
+        raise FileNotFoundError(f"Migration file missing: {path}")
     sql = path.read_text(encoding="utf-8")
     for stmt in _statements(sql):
-        await conn.execute(stmt)
+        await _execute_stmt(conn, stmt)
     print(f"Applied {path.name}")
 
 
@@ -73,6 +116,11 @@ def _is_retryable_db_error(exc: BaseException) -> bool:
 async def apply_schema() -> None:
     settings = get_settings()
     db_dir = Path(__file__).resolve().parent
+    migrate_files = sorted(db_dir.glob("migrate_*.sql"))
+    print(f"Migrate dir={db_dir} files={[p.name for p in migrate_files]}")
+    if not (db_dir / "schema.sql").is_file():
+        raise FileNotFoundError(f"schema.sql missing under {db_dir}")
+
     connect_kwargs: dict = {"dsn": settings.asyncpg_dsn}
     if settings.asyncpg_ssl is not None:
         connect_kwargs["ssl"] = settings.asyncpg_ssl
@@ -88,15 +136,16 @@ async def apply_schema() -> None:
             )
             """
         )
+        print(f"Existing chunks table: {bool(has_chunks)}")
         if has_chunks:
-            for path in sorted(db_dir.glob("migrate_*.sql")):
+            for path in migrate_files:
                 await _run_sql_file(conn, path)
 
         await _run_sql_file(conn, db_dir / "schema.sql")
 
         # Fresh installs: schema created tables with new columns; still run
         # migrates for indexes/policies that live only in migrate_*.sql.
-        for path in sorted(db_dir.glob("migrate_*.sql")):
+        for path in migrate_files:
             await _run_sql_file(conn, path)
         print("Schema applied.")
     finally:
