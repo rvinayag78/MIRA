@@ -43,6 +43,33 @@ async def _run_sql_file(conn: asyncpg.Connection, path: Path) -> None:
     print(f"Applied {path.name}")
 
 
+def _is_retryable_db_error(exc: BaseException) -> bool:
+    """Retry only connection / availability failures, not permanent SQL errors."""
+    if isinstance(exc, OSError):
+        return True
+    if isinstance(
+        exc,
+        (
+            asyncpg.CannotConnectNowError,
+            asyncpg.ConnectionDoesNotExistError,
+            asyncpg.ConnectionFailureError,
+            asyncpg.InterfaceError,
+        ),
+    ):
+        return True
+    msg = str(exc).lower()
+    return any(
+        token in msg
+        for token in (
+            "connection refused",
+            "could not connect",
+            "timeout",
+            "server closed the connection",
+            "the database system is starting up",
+        )
+    )
+
+
 async def apply_schema() -> None:
     settings = get_settings()
     db_dir = Path(__file__).resolve().parent
@@ -51,8 +78,24 @@ async def apply_schema() -> None:
         connect_kwargs["ssl"] = settings.asyncpg_ssl
     conn = await asyncpg.connect(**connect_kwargs)
     try:
+        # Additive ALTERs first when core tables already exist, so schema.sql
+        # indexes/policies that assume new columns do not race ahead.
+        has_chunks = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'chunks'
+            )
+            """
+        )
+        if has_chunks:
+            for path in sorted(db_dir.glob("migrate_*.sql")):
+                await _run_sql_file(conn, path)
+
         await _run_sql_file(conn, db_dir / "schema.sql")
-        # Additive migrations for existing deployments (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS)
+
+        # Fresh installs: schema created tables with new columns; still run
+        # migrates for indexes/policies that live only in migrate_*.sql.
         for path in sorted(db_dir.glob("migrate_*.sql")):
             await _run_sql_file(conn, path)
         print("Schema applied.")
@@ -66,8 +109,11 @@ async def main() -> None:
         try:
             await apply_schema()
             return
-        except (OSError, asyncpg.PostgresError) as exc:
+        except Exception as exc:  # noqa: BLE001 — classify retry vs fail-fast
             last_error = exc
+            if not _is_retryable_db_error(exc):
+                print(f"Migrate failed (not retrying): {exc}")
+                raise RuntimeError("Database migrate failed") from exc
             print(f"Waiting for database ({attempt}/30): {exc}")
             await asyncio.sleep(2)
     raise RuntimeError("Database migrate failed") from last_error

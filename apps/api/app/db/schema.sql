@@ -55,7 +55,8 @@ CREATE INDEX IF NOT EXISTS chunks_memory_id_idx ON chunks(memory_id);
 CREATE INDEX IF NOT EXISTS chunks_tsv_idx ON chunks USING GIN (tsv);
 CREATE INDEX IF NOT EXISTS chunks_embedding_idx ON chunks
     USING hnsw (embedding vector_cosine_ops);
-CREATE INDEX IF NOT EXISTS chunks_meta_gin_idx ON chunks USING GIN (meta);
+-- chunks_meta_gin_idx is created in migrate_substance.sql after ADD COLUMN meta
+-- so existing deployments are not indexed before the column exists.
 
 -- Semantic / person knowledge distilled from episodic recordings.
 -- Do not promote a single anecdote to established fact without sufficient evidence.
