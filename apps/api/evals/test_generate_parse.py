@@ -8,6 +8,7 @@ from app.services.generate import (
     check_citations_valid,
     broaden_retrieval_query,
     expand_retrieval_query,
+    reject_ungrounded_answer,
 )
 from app.services.retrieve import RetrievedChunk
 
@@ -51,6 +52,50 @@ def test_citation_validation():
     assert check_citations_valid(punctuated, chunks)
     assert not check_citations_valid(bad_id, chunks)
     assert not check_citations_valid(invented, chunks)
+
+
+def test_reject_ungrounded_even_when_coverage_strong():
+    """Strong coverage must not allow uncited personal claims (hallucination hole)."""
+    rejected = reject_ungrounded_answer(
+        answer="My favorite color is cerulean blue.",
+        citations=[],
+        coverage="strong",
+        uncertainty_flag=False,
+    )
+    assert rejected is not None
+    assert rejected.refused is True
+    assert rejected.uncertainty is True
+    assert rejected.citations == []
+
+
+def test_reject_ungrounded_allows_cited_or_uncertain():
+    cid = "11111111-1111-1111-1111-111111111111"
+    cited = reject_ungrounded_answer(
+        answer="We lived in a blue bungalow.",
+        citations=[Citation(chunk_id=cid, quote="blue bungalow")],
+        coverage="strong",
+        uncertainty_flag=False,
+    )
+    assert cited is None
+    uncertain = reject_ungrounded_answer(
+        answer="I don't think I ever recorded much about that.",
+        citations=[],
+        coverage="partial",
+        uncertainty_flag=True,
+    )
+    assert uncertain is None
+
+
+def test_reject_ungrounded_hard_refusal():
+    rejected = reject_ungrounded_answer(
+        answer=REFUSAL,
+        citations=[],
+        coverage="none",
+        uncertainty_flag=False,
+    )
+    assert rejected is not None
+    assert rejected.answer == REFUSAL
+    assert rejected.uncertainty is False
 
 
 def test_expand_retrieval_query_follow_up():

@@ -187,6 +187,42 @@ def _uncertainty_answer(coverage: str) -> str:
     return UNCERTAINTY_PHRASES[0]
 
 
+def reject_ungrounded_answer(
+    *,
+    answer: str,
+    citations: list[Citation],
+    coverage: str,
+    uncertainty_flag: bool,
+) -> GroundedAnswer | None:
+    """Fail closed when the model asserts personal claims without grounded citations.
+
+    Returns a replacement GroundedAnswer, or None if the answer may stand.
+    Coverage labels must not bypass this: weak nearest-neighbor facts can look
+    "strong" even when the question was never recorded.
+    """
+    if REFUSAL.lower() in answer.lower():
+        return GroundedAnswer(
+            answer=REFUSAL,
+            citations=[],
+            confidence=0.0,
+            refused=True,
+            intent="answerable_from_memories",
+            coverage=coverage,
+            uncertainty=False,
+        )
+    if not citations and not uncertainty_flag:
+        return GroundedAnswer(
+            answer=_uncertainty_answer(coverage),
+            citations=[],
+            confidence=0.0,
+            refused=True,
+            intent="answerable_from_memories",
+            coverage=coverage,
+            uncertainty=True,
+        )
+    return None
+
+
 async def ground_answer(
     question: str,
     chunks: list[RetrievedChunk],
@@ -302,31 +338,14 @@ async def ground_answer(
         if not cite.memory_id:
             cite.memory_id = mem_by_chunk.get(cite.chunk_id)
 
-    hard_refuse = REFUSAL.lower() in answer.lower()
-    no_evidence_claims = not citations and not uncertainty_flag and package.coverage != "strong"
-
-    if hard_refuse:
-        return GroundedAnswer(
-            answer=REFUSAL,
-            citations=[],
-            confidence=0.0,
-            refused=True,
-            intent="answerable_from_memories",
-            coverage=package.coverage,
-            uncertainty=False,
-        )
-
-    if no_evidence_claims and package.coverage != "strong":
-        # Model made claims without grounded citations → force uncertainty
-        return GroundedAnswer(
-            answer=_uncertainty_answer(package.coverage),
-            citations=[],
-            confidence=0.0,
-            refused=True,
-            intent="answerable_from_memories",
-            coverage=package.coverage,
-            uncertainty=True,
-        )
+    hard_refuse_or_unguarded = reject_ungrounded_answer(
+        answer=answer,
+        citations=citations,
+        coverage=package.coverage,
+        uncertainty_flag=uncertainty_flag,
+    )
+    if hard_refuse_or_unguarded is not None:
+        return hard_refuse_or_unguarded
 
     provenance = [
         ProvenanceLink(

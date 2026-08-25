@@ -109,23 +109,37 @@ def estimate_coverage(
     chunks: list[RetrievedChunk],
     facts: list[RetrievedFact],
 ) -> str:
+    """Estimate how well retrieved evidence covers the question.
+
+    Retrieval score alone must not mark coverage strong: nearest-neighbor facts
+    for an unrelated question often still score >= 0.1 in the same embed space.
+    Strong coverage requires query-term overlap (and, for facts, relevance).
+    """
     if not chunks and not facts:
         return "none"
-    q_tokens = {t for t in question.lower().split() if len(t) > 2}
+
+    def tokens(text: str) -> set[str]:
+        return {t.strip(".,!?;:\"'()[]").lower() for t in text.split() if len(t.strip(".,!?;:\"'()[]")) > 2}
+
+    q_tokens = tokens(question)
     if not q_tokens:
         return "partial" if chunks or facts else "none"
     best = 0.0
     for c in chunks:
-        c_tokens = set(c.text.lower().split())
+        c_tokens = tokens(c.text)
         overlap = len(q_tokens & c_tokens) / max(1, len(q_tokens))
         best = max(best, overlap)
-        if c.score >= 0.15:
-            best = max(best, 0.45)
-    for f in facts:
-        if f.status == "established" and f.score >= 0.1:
+        # High retrieval score only boosts when the chunk also shares query terms.
+        if c.score >= 0.35 and overlap >= 0.25:
             best = max(best, 0.5)
-        f_tokens = set(f.statement.lower().split())
-        best = max(best, len(q_tokens & f_tokens) / max(1, len(q_tokens)))
+        elif c.score >= 0.15 and overlap >= 0.15:
+            best = max(best, 0.35)
+    for f in facts:
+        f_tokens = tokens(f.statement)
+        overlap = len(q_tokens & f_tokens) / max(1, len(q_tokens))
+        best = max(best, overlap)
+        if f.status == "established" and f.score >= 0.35 and overlap >= 0.25:
+            best = max(best, 0.5)
     if best >= 0.45:
         return "strong"
     if best >= 0.15 or chunks:
