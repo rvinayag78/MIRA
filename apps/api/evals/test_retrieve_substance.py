@@ -84,3 +84,46 @@ def test_conflict_detection_and_coverage():
     pkg = build_evidence_package("What year?", chunks)
     assert pkg.conflicts
     assert estimate_coverage("Yosemite with Sarah", [], []) == "none"
+
+
+def test_unrelated_established_fact_does_not_force_strong_coverage():
+    """Nearest-neighbor established facts must not mark an unanswered question as strong."""
+    from app.services.memory_types import RetrievedFact
+
+    fact = RetrievedFact(
+        id=UUID("33333333-3333-3333-3333-333333333333"),
+        statement="Has a sister named Priya.",
+        category="relationship",
+        confidence=0.9,
+        status="established",
+        people=["Priya"],
+        places=[],
+        topics=["family"],
+        supporting_chunk_ids=[],
+        supporting_memory_ids=[UUID("11111111-1111-1111-1111-111111111111")],
+        conflict_note=None,
+        score=0.42,  # plausible NN score for same-agent English text
+    )
+    assert (
+        estimate_coverage("What is your favorite color?", [], [fact]) != "strong"
+    )
+
+
+def test_relevant_established_fact_can_be_strong():
+    from app.services.memory_types import RetrievedFact
+
+    fact = RetrievedFact(
+        id=UUID("33333333-3333-3333-3333-333333333333"),
+        statement="Has a sister named Priya.",
+        category="relationship",
+        confidence=0.9,
+        status="established",
+        people=["Priya"],
+        places=[],
+        topics=["family"],
+        supporting_chunk_ids=[],
+        supporting_memory_ids=[UUID("11111111-1111-1111-1111-111111111111")],
+        conflict_note=None,
+        score=0.55,
+    )
+    assert estimate_coverage("Tell me about your sister Priya", [], [fact]) == "strong"
