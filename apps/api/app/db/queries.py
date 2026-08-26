@@ -277,11 +277,16 @@ async def upsert_knowledge_fact(
     embedding: list[float],
     conflict_note: str | None = None,
 ) -> UUID:
-    """Merge into a similar existing fact when cosine similarity is high."""
+    """Merge into a similar existing fact when cosine similarity is high.
+
+    Distinct entities (different people/places) or conflicting statements must
+    NOT merge: templated relationship facts are near neighbors in embed space
+    and would otherwise collapse into one established claim that drops names.
+    """
     emb = _emb_str(embedding)
     similar = await conn.fetchrow(
         """
-        SELECT id, statement, supporting_chunk_ids, supporting_memory_ids,
+        SELECT id, statement, people, places, supporting_chunk_ids, supporting_memory_ids,
                evidence_count, confidence, status, conflict_note
         FROM knowledge_facts
         WHERE agent_id = $1 AND embedding IS NOT NULL
@@ -301,9 +306,15 @@ async def upsert_knowledge_fact(
             similar["id"],
             emb,
         )
-        # cosine distance; ~0.25 ≈ reasonably similar statements
-        if dist is not None and float(dist) <= 0.25:
-            merge = True
+        merge = should_merge_knowledge_facts(
+            distance=float(dist) if dist is not None else 1.0,
+            existing_statement=similar["statement"] or "",
+            new_statement=statement,
+            existing_people=list(similar["people"] or []),
+            new_people=people,
+            existing_places=list(similar["places"] or []),
+            new_places=places,
+        )
 
     if merge and similar is not None:
         chunk_ids = list(dict.fromkeys([*(similar["supporting_chunk_ids"] or []), *supporting_chunk_ids]))
@@ -312,13 +323,7 @@ async def upsert_knowledge_fact(
         new_conf = max(float(similar["confidence"] or 0), confidence)
         new_status = status
         note = conflict_note or similar["conflict_note"]
-        # Conflicting statements about same topic → disputed
-        if _statements_conflict(similar["statement"], statement):
-            new_status = "disputed"
-            note = (
-                f"Conflicting recordings: '{similar['statement']}' vs '{statement}'"
-            )
-        elif evidence_count >= 2 and new_conf >= 0.55:
+        if evidence_count >= 2 and new_conf >= 0.55:
             new_status = "established" if similar["status"] != "disputed" else "disputed"
 
         await conn.execute(
@@ -378,17 +383,108 @@ async def upsert_knowledge_fact(
     return row["id"]
 
 
+_NAME_STOPWORDS = {
+    "has",
+    "have",
+    "had",
+    "the",
+    "a",
+    "an",
+    "my",
+    "our",
+    "his",
+    "her",
+    "their",
+    "named",
+    "called",
+    "sister",
+    "brother",
+    "mother",
+    "father",
+    "mom",
+    "dad",
+    "friend",
+    "wife",
+    "husband",
+    "partner",
+    "connected",
+    "place",
+    "lived",
+    "from",
+    "in",
+    "on",
+    "at",
+    "to",
+    "and",
+    "or",
+    "of",
+    "is",
+    "was",
+    "were",
+    "with",
+}
+
+
+def _norm_entity_set(values: list[str]) -> set[str]:
+    return {v.strip().lower() for v in values if v and str(v).strip()}
+
+
+def _entity_sets_conflict(existing: list[str], new: list[str]) -> bool:
+    """True when both sides name entities and the sets disagree."""
+    a = _norm_entity_set(existing)
+    b = _norm_entity_set(new)
+    if not a or not b:
+        return False
+    return a != b
+
+
+def _proper_names(text: str) -> set[str]:
+    names = {m.group(0).lower() for m in re.finditer(r"\b[A-Z][a-z]{2,}\b", text or "")}
+    return {n for n in names if n not in _NAME_STOPWORDS}
+
+
 def _statements_conflict(a: str, b: str) -> bool:
-    """Cheap conflict heuristic: similar topic tokens but opposing year/place tokens."""
+    """Detect same-template facts that disagree on year or named entity."""
     years_a = set(re.findall(r"\b(?:19|20)\d{2}\b", a))
     years_b = set(re.findall(r"\b(?:19|20)\d{2}\b", b))
-    if years_a and years_b and years_a.isdisjoint(years_b):
-        # Same-ish wording but different years
-        ta = set(a.lower().split())
-        tb = set(b.lower().split())
-        if len(ta & tb) >= 3:
-            return True
+    ta = set(a.lower().split())
+    tb = set(b.lower().split())
+    overlap = len(ta & tb)
+    if years_a and years_b and years_a.isdisjoint(years_b) and overlap >= 3:
+        return True
+    names_a = _proper_names(a)
+    names_b = _proper_names(b)
+    if names_a and names_b and names_a != names_b and overlap >= 3:
+        return True
     return False
+
+
+def should_merge_knowledge_facts(
+    *,
+    distance: float,
+    existing_statement: str,
+    new_statement: str,
+    existing_people: list[str],
+    new_people: list[str],
+    existing_places: list[str],
+    new_places: list[str],
+    max_distance: float = 0.25,
+) -> bool:
+    """Return True only when the new fact is the same claim as the nearest neighbor.
+
+    Near-neighbor relationship templates (sister Lena vs sister Laura) often sit
+    well under the cosine distance threshold; merging them would keep one name,
+    attach the other memory as evidence, and promote a false established fact.
+    """
+    if distance > max_distance:
+        return False
+    if _entity_sets_conflict(existing_people, new_people):
+        return False
+    if _entity_sets_conflict(existing_places, new_places):
+        return False
+    if _statements_conflict(existing_statement, new_statement):
+        return False
+    return True
 
 
 async def count_indexed_memories(conn: asyncpg.Connection, agent_id: UUID) -> int:
