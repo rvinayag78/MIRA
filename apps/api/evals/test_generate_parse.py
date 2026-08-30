@@ -8,6 +8,7 @@ from app.services.generate import (
     check_citations_valid,
     broaden_retrieval_query,
     expand_retrieval_query,
+    uncited_claims_should_refuse,
 )
 from app.services.retrieve import RetrievedChunk
 
@@ -69,6 +70,21 @@ def test_broaden_retrieval_query_family_and_early():
 
 def test_refusal_constant():
     assert "recorded memories" in REFUSAL.lower()
+
+
+def test_uncited_partial_refuses_even_when_model_marks_uncertain():
+    """Hedged inventions must not bypass the citation guard.
+
+    Concrete trigger: coverage=partial, empty citations, model sets
+    uncertainty:true (or answer contains "not sure") while inventing a pet /
+    event that was never recorded. Pre-fix, ``not uncertainty_flag`` exempted
+    these answers and the keeper heard false maker memories.
+    """
+    assert uncited_claims_should_refuse(has_citations=False, coverage="partial")
+    assert uncited_claims_should_refuse(has_citations=False, coverage="none")
+    assert not uncited_claims_should_refuse(has_citations=True, coverage="partial")
+    # strong-coverage uncited path left to the separate coverage-guard fix
+    assert not uncited_claims_should_refuse(has_citations=False, coverage="strong")
 
 
 def test_parse_contextualized_keeps_every_chunk():

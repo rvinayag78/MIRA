@@ -187,6 +187,21 @@ def _uncertainty_answer(coverage: str) -> str:
     return UNCERTAINTY_PHRASES[0]
 
 
+def uncited_claims_should_refuse(*, has_citations: bool, coverage: str) -> bool:
+    """Whether an answer without grounded citations must be replaced.
+
+    ``uncertainty_flag`` is intentionally not a parameter: models often set
+    ``uncertainty: true`` (or write "not sure") while inventing personal details.
+    That must not exempt uncited answers from the fail-closed path.
+
+    ``coverage == "strong"`` remains exempt here so this guard stays scoped to the
+    uncertainty bypass; strong-coverage inflation is tracked separately.
+    """
+    if has_citations:
+        return False
+    return coverage != "strong"
+
+
 async def ground_answer(
     question: str,
     chunks: list[RetrievedChunk],
@@ -303,7 +318,6 @@ async def ground_answer(
             cite.memory_id = mem_by_chunk.get(cite.chunk_id)
 
     hard_refuse = REFUSAL.lower() in answer.lower()
-    no_evidence_claims = not citations and not uncertainty_flag and package.coverage != "strong"
 
     if hard_refuse:
         return GroundedAnswer(
@@ -316,8 +330,13 @@ async def ground_answer(
             uncertainty=False,
         )
 
-    if no_evidence_claims and package.coverage != "strong":
-        # Model made claims without grounded citations → force uncertainty
+    # Fail closed on uncited answers. uncertainty_flag must not bypass this:
+    # models often set uncertainty:true (or emit "not sure") while still inventing
+    # personal details. coverage=="strong" bypass is a separate guard path.
+    if uncited_claims_should_refuse(
+        has_citations=bool(citations),
+        coverage=package.coverage,
+    ):
         return GroundedAnswer(
             answer=_uncertainty_answer(package.coverage),
             citations=[],
